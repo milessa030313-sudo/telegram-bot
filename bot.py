@@ -1,4 +1,4 @@
-"import asyncio
+import asyncio
 import os
 import aiohttp
 from bs4 import BeautifulSoup
@@ -113,4 +113,4 @@ async def main():
 
 
 if __name__ == ""__main__"":
-    asyncio.run(main())"
+    asyncio.run(main())
