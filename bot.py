@@ -15,49 +15,39 @@ dp = Dispatcher()
 
 db = None
 
-# ==========================
-# URLЫ ДЛЯ ПАРСИНГА
-# ==========================
-
 RENT_URL = "https://krisha.kz/arenda/kvartiry/almaty/"
 SALE_URL = "https://krisha.kz/prodazha/kvartiry/almaty/"
 
-# ==========================
-# ПАРСЕР
-# ==========================
-
 async def parse_krisha(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as response:
             html = await response.text()
 
     soup = BeautifulSoup(html, "html.parser")
-    cards = soup.find_all("a", class_="a-card__title")
 
     results = []
 
-    for card in cards[:10]:
-        link = "https://krisha.kz" + card.get("href")
-        title = card.text.strip()
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
 
-        ad_id = link.split("/")[-1]
+        if "/show/" in href:
+            full_link = "https://krisha.kz" + href
+            ad_id = href.split("/")[-1]
 
-        results.append({
-            "id": ad_id,
-            "title": title,
-            "link": link
-        })
+            title = link.text.strip()
+            if not title:
+                continue
 
-    return results
+            results.append({
+                "id": ad_id,
+                "title": title,
+                "link": full_link
+            })
 
+    return results[:10]
 
-# ==========================
-# СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЯ
-# ==========================
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -67,12 +57,8 @@ async def start(message: types.Message):
         ON CONFLICT (user_id) DO NOTHING
     """, message.from_user.id)
 
-    await message.answer("🚀 Авто-уведомления запущены!\nТеперь новые объявления будут приходить автоматически.")
+    await message.answer("🚀 Авто-уведомления активированы!")
 
-
-# ==========================
-# ФОНОВЫЙ АВТО-ПАРСЕР
-# ==========================
 
 async def auto_parser():
     while True:
@@ -83,44 +69,48 @@ async def auto_parser():
 
         users = await db.fetch("SELECT user_id FROM users")
 
-        # Проверяем аренду
         for ad in rent_ads:
-            exists = await db.fetchrow("SELECT 1 FROM ads WHERE ad_id=$1", ad["id"])
+            exists = await db.fetchrow(
+                "SELECT 1 FROM ads WHERE ad_id=$1", ad["id"]
+            )
 
             if not exists:
-                await db.execute("INSERT INTO ads(ad_id) VALUES($1)", ad["id"])
+                await db.execute(
+                    "INSERT INTO ads(ad_id) VALUES($1)",
+                    ad["id"]
+                )
 
                 for user in users:
                     try:
                         await bot.send_message(
                             user["user_id"],
-                            f"🏠 Новая аренда:\n{ad['title']}\n{ad['link']}"
+                            f"🏠 Аренда:\n{ad['title']}\n{ad['link']}"
                         )
                     except:
                         pass
 
-        # Проверяем продажу
         for ad in sale_ads:
-            exists = await db.fetchrow("SELECT 1 FROM ads WHERE ad_id=$1", ad["id"])
+            exists = await db.fetchrow(
+                "SELECT 1 FROM ads WHERE ad_id=$1", ad["id"]
+            )
 
             if not exists:
-                await db.execute("INSERT INTO ads(ad_id) VALUES($1)", ad["id"])
+                await db.execute(
+                    "INSERT INTO ads(ad_id) VALUES($1)",
+                    ad["id"]
+                )
 
                 for user in users:
                     try:
                         await bot.send_message(
                             user["user_id"],
-                            f"🏡 Новая продажа:\n{ad['title']}\n{ad['link']}"
+                            f"🏡 Продажа:\n{ad['title']}\n{ad['link']}"
                         )
                     except:
                         pass
 
-        await asyncio.sleep(30)  # Проверка каждые 30 секунд
+        await asyncio.sleep(30)
 
-
-# ==========================
-# MAIN
-# ==========================
 
 async def main():
     global db
