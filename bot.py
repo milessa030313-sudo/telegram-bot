@@ -1,24 +1,20 @@
 import asyncio
 import os
+import json
+import re
 import aiohttp
-import asyncpg
 from bs4 import BeautifulSoup
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
 TOKEN = os.getenv("TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-db = None
 
-
-# =======================
-# ПАРСЕР KRISHA
-# =======================
+# ======== ПАРСЕР KRISHA (ПРОФЕССИОНАЛЬНЫЙ JSON) =========
 
 async def parse_krisha(url):
     headers = {
@@ -30,106 +26,105 @@ async def parse_krisha(url):
             html = await response.text()
 
     soup = BeautifulSoup(html, "html.parser")
+    scripts = soup.find_all("script")
 
-    cards = soup.find_all("a", class_="a-card__link")[:5]
+    data_script = None
+
+    for script in scripts:
+        if script.string and "window.__INITIAL_STATE__" in script.string:
+            data_script = script.string
+            break
+
+    if not data_script:
+        return []
+
+    match = re.search(r"window.__INITIAL_STATE__ = (.*);", data_script)
+
+    if not match:
+        return []
+
+    data = json.loads(match.group(1))
+
+    offers = data.get("search", {}).get("offers", [])
 
     results = []
 
-    for card in cards:
-        link = "https://krisha.kz" + card.get("href")
+    for offer in offers[:5]:
+        title = offer.get("title", "Без названия")
+        price = offer.get("price", "Без цены")
+        offer_id = offer.get("id")
 
-        title_block = card.find_parent("div", class_="a-card__descr")
+        link = f"https://krisha.kz/a/show/{offer_id}"
 
-        if title_block:
-            title = title_block.find("a").text.strip()
-            price = title_block.find("div", class_="a-card__price").text.strip()
-
-            text = f"""
+        text = f"""
 🏠 Новое объявление:
 
 {title}
-💰 {price}
+💰 {price} ₸
 
 🔗 {link}
 """
-            results.append(text)
+        results.append(text)
 
     return results
 
 
-# =======================
-# /start
-# =======================
+# ========= START =========
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-
     keyboard = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="🏠 Аренда")],
-            [types.KeyboardButton(text="🌳 Продажа")]
+            [types.KeyboardButton(text="🏡 Продажа")]
         ],
         resize_keyboard=True
     )
 
     await message.answer(
-        "Выберите категорию:",
+        "🚀 Бот недвижимости\nВыберите категорию:",
         reply_markup=keyboard
     )
 
 
-# =======================
-# ОБРАБОТЧИК
-# =======================
+# ========= ОБРАБОТЧИК =========
 
 @dp.message()
 async def handler(message: types.Message):
 
-    text = message.text.lower()
+    if message.text == "🏠 Аренда":
 
-    if "аренда" in text:
         await message.answer("🔎 Ищу аренду...")
 
         url = "https://krisha.kz/arenda/kvartiry/almaty/"
-        data = await parse_krisha(url)
+        results = await parse_krisha(url)
 
-        if not data:
-            await message.answer("Объявления не найдены.")
+        if not results:
+            await message.answer("❌ Объявления не найдены.")
             return
 
-        for item in data:
+        for item in results:
             await message.answer(item)
 
-    elif "продажа" in text:
+
+    elif message.text == "🏡 Продажа":
+
         await message.answer("🔎 Ищу продажу...")
 
         url = "https://krisha.kz/prodazha/kvartiry/almaty/"
-        data = await parse_krisha(url)
+        results = await parse_krisha(url)
 
-        if not data:
-            await message.answer("Объявления не найдены.")
+        if not results:
+            await message.answer("❌ Объявления не найдены.")
             return
 
-        for item in data:
+        for item in results:
             await message.answer(item)
 
 
-# =======================
-# MAIN
-# =======================
+# ========= ЗАПУСК =========
 
 async def main():
-    global db
-
-    db = await asyncpg.connect(DATABASE_URL)
-
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS users(
-            user_id BIGINT PRIMARY KEY,
-            username TEXT
-        )
-    """)
-
     await dp.start_polling(bot)
 
 
