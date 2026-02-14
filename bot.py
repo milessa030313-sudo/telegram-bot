@@ -2,9 +2,9 @@ import asyncio
 import os
 import aiohttp
 import asyncpg
+import xml.etree.ElementTree as ET
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from bs4 import BeautifulSoup
 
 TOKEN = os.getenv("TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -14,8 +14,8 @@ dp = Dispatcher()
 
 db = None
 
-RENT_URL = "https://krisha.kz/arenda/kvartiry/almaty/"
-SALE_URL = "https://krisha.kz/prodazha/kvartiry/almaty/"
+RENT_RSS = "https://krisha.kz/arenda/kvartiry/almaty/?rss=1"
+SALE_RSS = "https://krisha.kz/prodazha/kvartiry/almaty/?rss=1"
 
 # ================= БАЗА =================
 
@@ -37,44 +37,28 @@ async def get_users():
     rows = await db.fetch("SELECT user_id FROM users")
     return [r["user_id"] for r in rows]
 
-# ================= ПАРСЕР =================
+# ================= RSS ПАРСЕР =================
 
-async def parse_krisha(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 10)",
-        "Accept-Language": "ru-RU,ru;q=0.9"
-    }
-
-    async with aiohttp.ClientSession(headers=headers) as session:
+async def parse_rss(url):
+    async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
-            html = await response.text()
+            text = await response.text()
 
-    soup = BeautifulSoup(html, "html.parser")
-    cards = soup.find_all("div", class_="a-card__inc")
+    root = ET.fromstring(text)
 
-    results = []
+    items = []
+    for item in root.findall(".//item")[:10]:
+        title = item.find("title").text
+        link = item.find("link").text
+        ad_id = link.split("/")[-1]
 
-    for card in cards:
-        link_tag = card.find("a", class_="a-card__title")
-        if not link_tag:
-            continue
-
-        title = link_tag.text.strip()
-        href = link_tag.get("href")
-
-        if not href:
-            continue
-
-        full_link = "https://krisha.kz" + href
-        ad_id = href.split("/")[-1]
-
-        results.append({
+        items.append({
             "id": ad_id,
             "title": title,
-            "link": full_link
+            "link": link
         })
 
-    return results[:10]
+    return items
 
 # ================= КНОПКИ =================
 
@@ -102,11 +86,11 @@ async def handler(message: types.Message):
 
     if message.text == "🏠 Аренда":
         await message.answer("🔎 Ищу аренду...")
-        ads = await parse_krisha(RENT_URL)
+        ads = await parse_rss(RENT_RSS)
 
     elif message.text == "🏡 Продажа":
         await message.answer("🔎 Ищу продажу...")
-        ads = await parse_krisha(SALE_URL)
+        ads = await parse_rss(SALE_RSS)
 
     else:
         return
@@ -131,8 +115,8 @@ async def auto_parser():
         try:
             users = await get_users()
 
-            rent_ads = await parse_krisha(RENT_URL)
-            sale_ads = await parse_krisha(SALE_URL)
+            rent_ads = await parse_rss(RENT_RSS)
+            sale_ads = await parse_rss(SALE_RSS)
 
             for ad in rent_ads:
                 if ad["id"] not in last_rent_ids:
@@ -156,7 +140,8 @@ async def auto_parser():
             print("Ошибка авто-парсера:", e)
 
         await asyncio.sleep(60)
-        # ================= MAIN =================
+
+# ================= MAIN =================
 
 async def main():
     global db
