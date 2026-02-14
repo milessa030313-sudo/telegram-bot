@@ -1,4 +1,3 @@
-import asyncio
 import os
 import asyncpg
 
@@ -35,13 +34,15 @@ async def start(message: types.Message):
 async def handler(message: types.Message):
     await message.answer(f"Вы выбрали: {message.text}")
 
-    # пример записи в базу
     await db.execute(
-        "INSERT INTO users(user_id, username) VALUES($1, $2) ON CONFLICT DO NOTHING",
+        """
+        INSERT INTO users(user_id, username)
+        VALUES($1, $2)
+        ON CONFLICT (user_id) DO NOTHING
+        """,
         message.from_user.id,
         message.from_user.username
     )
-
 
 async def main():
     global db
