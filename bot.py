@@ -1,5 +1,6 @@
 import asyncio
 import os
+import asyncpg
 import aiohttp
 from bs4 import BeautifulSoup
 
@@ -7,108 +8,138 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
 TOKEN = os.getenv("TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+db = None
 
-# =================== ПАРСЕР ===================
+# ==========================
+# URLЫ ДЛЯ ПАРСИНГА
+# ==========================
+
+RENT_URL = "https://krisha.kz/arenda/kvartiry/almaty/"
+SALE_URL = "https://krisha.kz/prodazha/kvartiry/almaty/"
+
+# ==========================
+# ПАРСЕР
+# ==========================
 
 async def parse_krisha(url):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0"
     }
 
-    async with aiohttp.ClientSession(headers=headers) as session:
-        async with session.get(url) as response:
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as response:
             html = await response.text()
 
     soup = BeautifulSoup(html, "html.parser")
-
-    cards = soup.find_all("div", class_="a-card__inc")
+    cards = soup.find_all("a", class_="a-card__title")
 
     results = []
 
-    for card in cards[:5]:
-        title_tag = card.find("a", class_="a-card__title")
-        price_tag = card.find("div", class_="a-card__price")
+    for card in cards[:10]:
+        link = "https://krisha.kz" + card.get("href")
+        title = card.text.strip()
 
-        if not title_tag or not price_tag:
-            continue
+        ad_id = link.split("/")[-1]
 
-        title = title_tag.text.strip()
-        price = price_tag.text.strip()
-        link = "https://krisha.kz" + title_tag.get("href")
-
-        text = f"""
-🏠 Новое объявление:
-
-{title}
-💰 {price}
-
-🔗 {link}
-"""
-        results.append(text)
+        results.append({
+            "id": ad_id,
+            "title": title,
+            "link": link
+        })
 
     return results
 
 
-# =================== START ===================
+# ==========================
+# СОХРАНЕНИЕ ПОЛЬЗОВАТЕЛЯ
+# ==========================
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text="🏠 Аренда")],
-            [types.KeyboardButton(text="🏡 Продажа")]
-        ],
-        resize_keyboard=True
-    )
+    await db.execute("""
+        INSERT INTO users(user_id)
+        VALUES($1)
+        ON CONFLICT (user_id) DO NOTHING
+    """, message.from_user.id)
 
-    await message.answer(
-        "🚀 Бот недвижимости\nВыберите категорию:",
-        reply_markup=keyboard
-    )
+    await message.answer("🚀 Авто-уведомления запущены!\nТеперь новые объявления будут приходить автоматически.")
 
 
-# =================== ОБРАБОТКА ===================
+# ==========================
+# ФОНОВЫЙ АВТО-ПАРСЕР
+# ==========================
 
-@dp.message()
-async def handler(message: types.Message):
+async def auto_parser():
+    while True:
+        print("Проверка новых объявлений...")
 
-    if message.text == "🏠 Аренда":
+        rent_ads = await parse_krisha(RENT_URL)
+        sale_ads = await parse_krisha(SALE_URL)
 
-        await message.answer("🔎 Ищу аренду...")
+        users = await db.fetch("SELECT user_id FROM users")
 
-        url = "https://krisha.kz/arenda/kvartiry/almaty/"
-        results = await parse_krisha(url)
+        # Проверяем аренду
+        for ad in rent_ads:
+            exists = await db.fetchrow("SELECT 1 FROM ads WHERE ad_id=$1", ad["id"])
 
-        if not results:
-            await message.answer("❌ Объявления не найдены.")
-            return
+            if not exists:
+                await db.execute("INSERT INTO ads(ad_id) VALUES($1)", ad["id"])
 
-        for item in results:
-            await message.answer(item)
+                for user in users:
+                    try:
+                        await bot.send_message(
+                            user["user_id"],
+                            f"🏠 Новая аренда:\n{ad['title']}\n{ad['link']}"
+                        )
+                    except:
+                        pass
+
+        # Проверяем продажу
+        for ad in sale_ads:
+            exists = await db.fetchrow("SELECT 1 FROM ads WHERE ad_id=$1", ad["id"])
+
+            if not exists:
+                await db.execute("INSERT INTO ads(ad_id) VALUES($1)", ad["id"])
+
+                for user in users:
+                    try:
+                        await bot.send_message(
+                            user["user_id"],
+                            f"🏡 Новая продажа:\n{ad['title']}\n{ad['link']}"
+                        )
+                    except:
+                        pass
+
+        await asyncio.sleep(30)  # Проверка каждые 30 секунд
 
 
-    elif message.text == "🏡 Продажа":
-
-        await message.answer("🔎 Ищу продажу...")
-
-        url = "https://krisha.kz/prodazha/kvartiry/almaty/"
-        results = await parse_krisha(url)
-
-        if not results:
-            await message.answer("❌ Объявления не найдены.")
-            return
-
-        for item in results:
-            await message.answer(item)
-
-
-# =================== ЗАПУСК ===================
+# ==========================
+# MAIN
+# ==========================
 
 async def main():
+    global db
+    db = await asyncpg.connect(DATABASE_URL)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id BIGINT PRIMARY KEY
+        )
+    """)
+
+    await db.execute("""
+        CREATE TABLE IF NOT EXISTS ads (
+            ad_id TEXT PRIMARY KEY
+        )
+    """)
+
+    asyncio.create_task(auto_parser())
+
     await dp.start_polling(bot)
 
 
