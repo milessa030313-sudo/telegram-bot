@@ -11,6 +11,10 @@ TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# =================== ХРАНЕНИЕ ===================
+
+users = set()
+sent_links = set()
 
 # =================== ПАРСЕР ===================
 
@@ -24,7 +28,6 @@ async def parse_krisha(url):
             html = await response.text()
 
     soup = BeautifulSoup(html, "html.parser")
-
     cards = soup.find_all("div", class_="a-card__inc")
 
     results = []
@@ -40,6 +43,11 @@ async def parse_krisha(url):
         price = price_tag.text.strip()
         link = "https://krisha.kz" + title_tag.get("href")
 
+        if link in sent_links:
+            continue
+
+        sent_links.add(link)
+
         text = f"""
 🏠 Новое объявление:
 
@@ -53,10 +61,34 @@ async def parse_krisha(url):
     return results
 
 
+# =================== АВТО-ПРОВЕРКА ===================
+
+async def auto_parser():
+    while True:
+        print("Проверка новых объявлений...")
+
+        rent_url = "https://krisha.kz/arenda/kvartiry/almaty/"
+        sale_url = "https://krisha.kz/prodazha/kvartiry/almaty/"
+
+        rent_results = await parse_krisha(rent_url)
+        sale_results = await parse_krisha(sale_url)
+
+        for user_id in users:
+            for item in rent_results:
+                await bot.send_message(user_id, item)
+
+            for item in sale_results:
+                await bot.send_message(user_id, item)
+
+        await asyncio.sleep(30)  # ← каждые 30 секунд
+
+
 # =================== START ===================
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
+    users.add(message.from_user.id)
+
     keyboard = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="🏠 Аренда")],
@@ -71,7 +103,7 @@ async def start(message: types.Message):
     )
 
 
-# =================== ОБРАБОТКА ===================
+# =================== РУЧНОЙ ПОИСК ===================
 
 @dp.message()
 async def handler(message: types.Message):
@@ -84,12 +116,11 @@ async def handler(message: types.Message):
         results = await parse_krisha(url)
 
         if not results:
-            await message.answer("❌ Объявления не найдены.")
+            await message.answer("❌ Новых объявлений нет.")
             return
 
         for item in results:
             await message.answer(item)
-
 
     elif message.text == "🏡 Продажа":
 
@@ -99,7 +130,7 @@ async def handler(message: types.Message):
         results = await parse_krisha(url)
 
         if not results:
-            await message.answer("❌ Объявления не найдены.")
+            await message.answer("❌ Новых объявлений нет.")
             return
 
         for item in results:
@@ -109,6 +140,7 @@ async def handler(message: types.Message):
 # =================== ЗАПУСК ===================
 
 async def main():
+    asyncio.create_task(auto_parser())  # запускаем авто-парсер
     await dp.start_polling(bot)
 
 
