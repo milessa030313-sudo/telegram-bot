@@ -2,26 +2,27 @@ import asyncio
 import os
 import aiohttp
 from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
+from aiogram.types import LabeledPrice
 
 TOKEN = os.getenv("TOKEN")
+PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# =================== ХРАНЕНИЕ ===================
-
-users = set()
+subscriptions = {}
 sent_links = set()
 
-# =================== ПАРСЕР ===================
+CHECK_INTERVAL = 30
+
+# ================= ПАРСЕР =================
 
 async def parse_krisha(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
 
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.get(url) as response:
@@ -43,106 +44,115 @@ async def parse_krisha(url):
         price = price_tag.text.strip()
         link = "https://krisha.kz" + title_tag.get("href")
 
-        if link in sent_links:
-            continue
-
-        sent_links.add(link)
-
-        text = f"""
-🏠 Новое объявление:
-
-{title}
-💰 {price}
-
-🔗 {link}
-"""
-        results.append(text)
+        results.append((title, price, link))
 
     return results
 
 
-# =================== АВТО-ПРОВЕРКА ===================
+# ================= АВТО РАССЫЛКА =================
 
 async def auto_parser():
     while True:
-        print("Проверка новых объявлений...")
+        now = datetime.now()
 
-        rent_url = "https://krisha.kz/arenda/kvartiry/almaty/"
-        sale_url = "https://krisha.kz/prodazha/kvartiry/almaty/"
+        for user_id, expiry in list(subscriptions.items()):
 
-        rent_results = await parse_krisha(rent_url)
-        sale_results = await parse_krisha(sale_url)
+            if now > expiry:
+                subscriptions.pop(user_id)
+                continue
 
-        for user_id in users:
-            for item in rent_results:
-                await bot.send_message(user_id, item)
+            results = await parse_krisha(
+                "https://krisha.kz/prodazha/kvartiry/almaty/"
+            )
 
-            for item in sale_results:
-                await bot.send_message(user_id, item)
+            for title, price, link in results:
+                if link not in sent_links:
+                    sent_links.add(link)
 
-        await asyncio.sleep(30)  # ← каждые 30 секунд
+                    text = f"""
+🔥 Новое объявление
+
+{title}
+💰 {price}
+🔗 {link}
+"""
+                    try:
+                        await bot.send_message(user_id, text)
+                        await asyncio.sleep(0.05)
+                    except:
+                        pass
+
+        await asyncio.sleep(CHECK_INTERVAL)
 
 
-# =================== START ===================
+# ================= START =================
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    users.add(message.from_user.id)
 
     keyboard = types.ReplyKeyboardMarkup(
         keyboard=[
-            [types.KeyboardButton(text="🏠 Аренда")],
-            [types.KeyboardButton(text="🏡 Продажа")]
+            [types.KeyboardButton(text="💎 Купить подписку")],
+            [types.KeyboardButton(text="📊 Мой статус")]
         ],
         resize_keyboard=True
     )
 
     await message.answer(
-        "🚀 Бот недвижимости\nВыберите категорию:",
+        "Добро пожаловать.\nДля авто-уведомлений нужна подписка.",
         reply_markup=keyboard
     )
 
 
-# =================== РУЧНОЙ ПОИСК ===================
+# ================= КУПИТЬ =================
 
-@dp.message()
-async def handler(message: types.Message):
+@dp.message(lambda m: m.text == "💎 Купить подписку")
+async def buy(message: types.Message):
 
-    if message.text == "🏠 Аренда":
+    prices = [LabeledPrice(label="Подписка 30 дней", amount=199000)]
 
-        await message.answer("🔎 Ищу аренду...")
-
-        url = "https://krisha.kz/arenda/kvartiry/almaty/"
-        results = await parse_krisha(url)
-
-        if not results:
-            await message.answer("❌ Новых объявлений нет.")
-            return
-
-        for item in results:
-            await message.answer(item)
-
-    elif message.text == "🏡 Продажа":
-
-        await message.answer("🔎 Ищу продажу...")
-
-        url = "https://krisha.kz/prodazha/kvartiry/almaty/"
-        results = await parse_krisha(url)
-
-        if not results:
-            await message.answer("❌ Новых объявлений нет.")
-            return
-
-        for item in results:
-            await message.answer(item)
+    await bot.send_invoice(
+        chat_id=message.chat.id,
+        title="Premium подписка",
+        description="Доступ к авто-уведомлениям 30 дней",
+        payload="subscription",
+        provider_token=PROVIDER_TOKEN,
+        currency="KZT",
+        prices=prices,
+        start_parameter="subscribe"
+    )
 
 
-# =================== ЗАПУСК ===================
+# ================= PRE CHECKOUT =================
 
-async def main():
-    asyncio.create_task(auto_parser())  # запускаем авто-парсер
-    await dp.start_polling(bot)
+@dp.pre_checkout_query()
+async def process_pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# ================= УСПЕШНАЯ ОПЛАТА =================
+
+@dp.message(lambda m: m.successful_payment)
+async def successful_payment(message: types.Message):
+
+    expiry_date = datetime.now() + timedelta(days=30)
+    subscriptions[message.from_user.id] = expiry_date
+
+    await message.answer(
+        "✅ Оплата прошла успешно.\nПодписка активна 30 дней."
+    )
+
+
+# ================= СТАТУС =================
+
+@dp.message(lambda m: m.text == "📊 Мой статус")
+async def status(message: types.Message):
+
+    expiry = subscriptions.get(message.from_user.id)
+
+    if not expiry:
+        await message.answer("❌ У вас нет активной подписки.")
+    else:
+        await message.answer(
+            f"✅ Подписка активна до:\n{expiry.strftime('%d.%m.%Y %H:%M')}"
+        )
