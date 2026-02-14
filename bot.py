@@ -32,6 +32,9 @@ async def start(message: types.Message):
 
 @dp.message()
 async def handler(message: types.Message):
+    if message.text not in ["🏠 Аренда", "🏡 Продажа", "🛒 Товары"]:
+        return
+
     await message.answer(f"Вы выбрали: {message.text}")
 
     await db.execute(
