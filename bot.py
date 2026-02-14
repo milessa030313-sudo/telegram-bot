@@ -2,7 +2,6 @@ import asyncio
 import os
 import aiohttp
 from bs4 import BeautifulSoup
-
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 
@@ -11,133 +10,66 @@ TOKEN = os.getenv("TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
 
-# =======================
-# ПАРСЕР АРЕНДА
-# =======================
-async def parse_arenda():
-    url = "https://krisha.kz/arenda/kvartiry/almaty/"
+# ====== ПАРСЕР ======
+async def parse_krisha(url):
+    results = []
 
     async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
+        async with session.get(url, headers=HEADERS) as response:
             html = await response.text()
 
     soup = BeautifulSoup(html, "html.parser")
-    items = soup.find_all("div", class_="a-card")
 
-    ads = []
+    cards = soup.find_all("a", class_="a-card__title")
 
-    for item in items[:5]:
-        title = item.find("a", class_="a-card__title")
-        price = item.find("div", class_="a-card__price")
+    for card in cards[:5]:
+        title = card.text.strip()
+        link = "https://krisha.kz" + card.get("href")
 
-        if title and price:
-            ads.append({
-                "title": title.text.strip(),
-                "price": price.text.strip(),
-                "link": "https://krisha.kz" + title.get("href")
-            })
+        results.append(f"{title}\n{link}")
 
-    return ads
+    return results
 
 
-# =======================
-# ПАРСЕР ПРОДАЖА
-# =======================
-async def parse_prodazha():
-    url = "https://krisha.kz/prodazha/kvartiry/almaty/"
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            html = await response.text()
-
-    soup = BeautifulSoup(html, "html.parser")
-    items = soup.find_all("div", class_="a-card")
-
-    ads = []
-
-    for item in items[:5]:
-        title = item.find("a", class_="a-card__title")
-        price = item.find("div", class_="a-card__price")
-
-        if title and price:
-            ads.append({
-                "title": title.text.strip(),
-                "price": price.text.strip(),
-                "link": "https://krisha.kz" + title.get("href")
-            })
-
-    return ads
-
-
-# =======================
-# СТАРТ
-# =======================
+# ====== КНОПКИ ======
 @dp.message(Command("start"))
 async def start(message: types.Message):
     keyboard = types.ReplyKeyboardMarkup(
         keyboard=[
             [types.KeyboardButton(text="🏠 Аренда")],
-            [types.KeyboardButton(text="🏢 Продажа")]
+            [types.KeyboardButton(text="🏢 Продажа")],
         ],
         resize_keyboard=True
     )
 
-    await message.answer(
-        "🚀 Бот запущен!\nВыберите категорию:",
-        reply_markup=keyboard
-    )
+    await message.answer("Выберите категорию:", reply_markup=keyboard)
 
 
-# =======================
-# ОБРАБОТКА КНОПОК
-# =======================
+# ====== ОБРАБОТКА ======
 @dp.message()
 async def handler(message: types.Message):
 
     if message.text == "🏠 Аренда":
-        await message.answer("🔎 Ищу объявления по аренде...")
+        await message.answer("Ищу аренду...")
+        url = "https://krisha.kz/arenda/kvartiry/almaty/"
+        data = await parse_krisha(url)
 
-        ads = await parse_arenda()
-
-        if not ads:
-            await message.answer("❌ Объявления не найдены")
-            return
-
-        for ad in ads:
-            text = (
-                f"🏠 Новое объявление:\n\n"
-                f"{ad['title']}\n"
-                f"{ad['price']}\n"
-                f"{ad['link']}"
-            )
-            await message.answer(text)
+        for item in data:
+            await message.answer(item)
 
     elif message.text == "🏢 Продажа":
-        await message.answer("🔎 Ищу объявления по продаже...")
+        await message.answer("Ищу продажу...")
+        url = "https://krisha.kz/prodazha/kvartiry/almaty/"
+        data = await parse_krisha(url)
 
-        ads = await parse_prodazha()
-
-        if not ads:
-            await message.answer("❌ Объявления не найдены")
-            return
-
-        for ad in ads:
-            text = (
-                f"🏢 Новое объявление:\n\n"
-                f"{ad['title']}\n"
-                f"{ad['price']}\n"
-                f"{ad['link']}"
-            )
-            await message.answer(text)
-
-    else:
-        return
+        for item in data:
+            await message.answer(item)
 
 
-# =======================
-# ЗАПУСК
-# =======================
 async def main():
     await dp.start_polling(bot)
 
