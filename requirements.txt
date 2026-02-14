@@ -1,2 +1,5 @@
 aiogram==3.4.1
 asyncpg
+requests
+beautifulsoup4
+lxml
