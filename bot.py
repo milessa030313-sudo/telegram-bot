@@ -1,113 +1,95 @@
 import asyncio
 import os
 import aiohttp
-from bs4 import BeautifulSoup
+import xml.etree.ElementTree as ET
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 TOKEN = os.getenv("TOKEN")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
+# RSS ссылки
+RENT_RSS = "https://krisha.kz/arenda/kvartiry/almaty/?rss=1"
+SALE_RSS = "https://krisha.kz/prodazha/kvartiry/almaty/?rss=1"
 
-# =================== ПАРСЕР ===================
 
-async def parse_krisha(url):
+# ---------- Парсер RSS ----------
+async def parse_rss(url):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        "User-Agent": "Mozilla/5.0"
     }
 
-    async with aiohttp.ClientSession(headers=headers) as session:
-        async with session.get(url) as response:
-            html = await response.text()
+    try:
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.get(url, timeout=10) as response:
+                if response.status != 200:
+                    return []
 
-    soup = BeautifulSoup(html, "html.parser")
+                text = await response.text()
 
-    cards = soup.find_all("div", class_="a-card__inc")
+        root = ET.fromstring(text)
 
-    results = []
+        items = []
+        for item in root.findall(".//item")[:10]:
+            title = item.find("title")
+            link = item.find("link")
 
-    for card in cards[:5]:
-        title_tag = card.find("a", class_="a-card__title")
-        price_tag = card.find("div", class_="a-card__price")
+            if title is not None and link is not None:
+                items.append({
+                    "title": title.text,
+                    "link": link.text
+                })
 
-        if not title_tag or not price_tag:
-            continue
+        return items
 
-        title = title_tag.text.strip()
-        price = price_tag.text.strip()
-        link = "https://krisha.kz" + title_tag.get("href")
-
-        text = f"""
-🏠 Новое объявление:
-
-{title}
-💰 {price}
-
-🔗 {link}
-"""
-        results.append(text)
-
-    return results
+    except Exception as e:
+        print("RSS ошибка:", e)
+        return []
 
 
-# =================== START ===================
-
-@dp.message(Command("start"))
+# ---------- Старт ----------
+@dp.message(commands=["start"])
 async def start(message: types.Message):
-    keyboard = types.ReplyKeyboardMarkup(
+    keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [types.KeyboardButton(text="🏠 Аренда")],
-            [types.KeyboardButton(text="🏡 Продажа")]
+            [KeyboardButton(text="🏠 Аренда")],
+            [KeyboardButton(text="🏡 Продажа")]
         ],
         resize_keyboard=True
     )
 
-    await message.answer(
-        "🚀 Бот недвижимости\nВыберите категорию:",
-        reply_markup=keyboard
-    )
+    await message.answer("Выберите категорию:", reply_markup=keyboard)
 
 
-# =================== ОБРАБОТКА ===================
-
+# ---------- Обработчик кнопок ----------
 @dp.message()
 async def handler(message: types.Message):
 
     if message.text == "🏠 Аренда":
-
         await message.answer("🔎 Ищу аренду...")
-
-        url = "https://krisha.kz/arenda/kvartiry/almaty/"
-        results = await parse_krisha(url)
-
-        if not results:
-            await message.answer("❌ Объявления не найдены.")
-            return
-
-        for item in results:
-            await message.answer(item)
-
+        ads = await parse_rss(RENT_RSS)
 
     elif message.text == "🏡 Продажа":
-
         await message.answer("🔎 Ищу продажу...")
+        ads = await parse_rss(SALE_RSS)
 
-        url = "https://krisha.kz/prodazha/kvartiry/almaty/"
-        results = await parse_krisha(url)
+    else:
+        return
 
-        if not results:
-            await message.answer("❌ Объявления не найдены.")
-            return
+    if not ads:
+        await message.answer("❌ Объявления не найдены или сайт временно недоступен.")
+        return
 
-        for item in results:
-            await message.answer(item)
+    for ad in ads:
+        await message.answer(
+            f"{ad['title']}\n\n{ad['link']}"
+        )
 
 
-# =================== ЗАПУСК ===================
-
+# ---------- Запуск ----------
 async def main():
     await dp.start_polling(bot)
 
