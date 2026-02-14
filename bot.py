@@ -1,7 +1,5 @@
 import asyncio
 import os
-import json
-import re
 import aiohttp
 from bs4 import BeautifulSoup
 
@@ -14,11 +12,11 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 
-# ======== ПАРСЕР KRISHA (ПРОФЕССИОНАЛЬНЫЙ JSON) =========
+# =================== ПАРСЕР ===================
 
 async def parse_krisha(url):
     headers = {
-        "User-Agent": "Mozilla/5.0"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
 
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -26,41 +24,27 @@ async def parse_krisha(url):
             html = await response.text()
 
     soup = BeautifulSoup(html, "html.parser")
-    scripts = soup.find_all("script")
 
-    data_script = None
-
-    for script in scripts:
-        if script.string and "window.__INITIAL_STATE__" in script.string:
-            data_script = script.string
-            break
-
-    if not data_script:
-        return []
-
-    match = re.search(r"window.__INITIAL_STATE__ = (.*);", data_script)
-
-    if not match:
-        return []
-
-    data = json.loads(match.group(1))
-
-    offers = data.get("search", {}).get("offers", [])
+    cards = soup.find_all("div", class_="a-card__inc")
 
     results = []
 
-    for offer in offers[:5]:
-        title = offer.get("title", "Без названия")
-        price = offer.get("price", "Без цены")
-        offer_id = offer.get("id")
+    for card in cards[:5]:
+        title_tag = card.find("a", class_="a-card__title")
+        price_tag = card.find("div", class_="a-card__price")
 
-        link = f"https://krisha.kz/a/show/{offer_id}"
+        if not title_tag or not price_tag:
+            continue
+
+        title = title_tag.text.strip()
+        price = price_tag.text.strip()
+        link = "https://krisha.kz" + title_tag.get("href")
 
         text = f"""
 🏠 Новое объявление:
 
 {title}
-💰 {price} ₸
+💰 {price}
 
 🔗 {link}
 """
@@ -69,7 +53,7 @@ async def parse_krisha(url):
     return results
 
 
-# ========= START =========
+# =================== START ===================
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
@@ -87,7 +71,7 @@ async def start(message: types.Message):
     )
 
 
-# ========= ОБРАБОТЧИК =========
+# =================== ОБРАБОТКА ===================
 
 @dp.message()
 async def handler(message: types.Message):
@@ -122,7 +106,7 @@ async def handler(message: types.Message):
             await message.answer(item)
 
 
-# ========= ЗАПУСК =========
+# =================== ЗАПУСК ===================
 
 async def main():
     await dp.start_polling(bot)
