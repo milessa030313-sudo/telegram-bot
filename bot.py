@@ -189,44 +189,37 @@ async def approve_payment(callback: types.CallbackQuery):
 # ================== АВТОМОНИТОР ==================
 
 async def monitor():
-    await asyncio.sleep(10)
-
     while True:
         try:
             cursor.execute("SELECT user_id, pro_until FROM users WHERE active=1")
             users = cursor.fetchall()
 
-for user_id, pro_until in users:
+            for user_id, pro_until in users:
 
-    # если нет подписки — пропускаем
-    if not pro_until:
-        continue
+                if not pro_until:
+                    continue
 
-    expire = datetime.fromisoformat(pro_until)
+                expire = datetime.fromisoformat(pro_until)
 
-    # если срок вышел — отключаем
-    if expire < datetime.now():
-        cursor.execute(
-            "UPDATE users SET pro_until=NULL WHERE user_id=?",
-            (user_id,)
-        )
-        db.commit()
+                if expire < datetime.now():
+                    cursor.execute(
+                        "UPDATE users SET pro_until=NULL WHERE user_id=?",
+                        (user_id,)
+                    )
+                    db.commit()
 
-        await bot.send_message(
-            user_id,
-            "❌ Ваша подписка закончилась.\n\n"
-            "Продлите доступ для продолжения работы."
-        )
-        continue
+                    await bot.send_message(
+                        user_id,
+                        "❌ Ваша подписка закончилась.\n\nПродлите доступ."
+                    )
+                    continue
 
-    # если подписка активна — отправляем объявления
-    await send_results(user_id, "https://krisha.kz/arenda/kvartiry/almaty/")
-
-            await asyncio.sleep(120)  # 2 минуты
+                await send_results(user_id, "https://krisha.kz/arenda/kvartiry/almaty/")
 
         except Exception as e:
-            print("Ошибка:", e)
-            await asyncio.sleep(60)
+            print("Monitor error:", e)
+
+        await asyncio.sleep(120)
 
 # ================== ЗАПУСК ==================
 
