@@ -213,10 +213,18 @@ async def free_trial(message: types.Message):
     user_id = message.from_user.id
     expire = datetime.now() + timedelta(hours=2)
 
+    # если пользователя нет — создаём
+    cursor.execute(
+        "INSERT OR IGNORE INTO users (user_id, active) VALUES (?, 1)",
+        (user_id,)
+    )
+
+    # обновляем подписку
     cursor.execute(
         "UPDATE users SET pro_until=? WHERE user_id=?",
         (expire.isoformat(), user_id)
     )
+
     db.commit()
 
     await message.answer(
