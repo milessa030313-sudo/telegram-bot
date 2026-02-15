@@ -193,8 +193,8 @@ async def monitor():
 
     while True:
         try:
-cursor.execute("SELECT user_id, pro_until FROM users WHERE active=1")
-users = cursor.fetchall()
+            cursor.execute("SELECT user_id, pro_until FROM users WHERE active=1")
+            users = cursor.fetchall()
 
 for user_id, pro_until in users:
 
