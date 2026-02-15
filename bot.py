@@ -6,9 +6,10 @@ from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from datetime import datetime, timedelta
 
 TOKEN = os.getenv("TOKEN")
-
+ADMIN_ID = 7799445685
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -20,7 +21,9 @@ cursor = db.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users(
     user_id INTEGER PRIMARY KEY,
-    active INTEGER DEFAULT 1
+    active INTEGER DEFAULT 1,
+    pro_until TEXT,
+    trial_used INTEGER DEFAULT 0
 )
 """)
 
@@ -38,7 +41,10 @@ keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🏠 Аренда")],
         [KeyboardButton(text="🏡 Продажа")],
-        [KeyboardButton(text="⛔ Стоп"), KeyboardButton(text="▶️ Запустить")]
+        [KeyboardButton(text="🔴 Стоп"), KeyboardButton(text="🔵 Запустить")],
+        [KeyboardButton(text="🎁 Бесплатно 2 часа")],
+        [KeyboardButton(text="💎 Купить подписку")],
+        [KeyboardButton(text="💳 Я оплатил")]
     ],
     resize_keyboard=True
 )
@@ -92,6 +98,20 @@ async def handler(message: types.Message):
 
     user_id = message.from_user.id
 
+    # 👇 СНАЧАЛА разрешаем служебные кнопки
+    if message.text in ["🔴 Стоп", "🔵 Запустить", "🎁 Бесплатно 2 часа", "💎 Купить подписку", "💳 Я оплатил"]:
+        pass
+    else:
+        # 👇 ПРОВЕРКА ПОДПИСКИ
+        is_active = await check_subscription(user_id)
+
+        if not is_active:
+            await message.answer(
+                "🔒 Доступ закрыт.\n\n"
+                "🎁 Попробуйте бесплатно 2 часа\n"
+                "или купите подписку."
+            )
+            return
     # СТОП
     if message.text == "⛔ Стоп":
         cursor.execute("UPDATE users SET active=0 WHERE user_id=?", (user_id,))
@@ -116,31 +136,46 @@ async def handler(message: types.Message):
 # ================== ОТПРАВКА ==================
 
 async def send_results(user_id, url):
+@dp.message(lambda m: m.text == "💳 Я оплатил")
+async def user_paid(message: types.Message):
 
-    results = await parse(url)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text="✅ Подтвердить оплату",
+                callback_data=f"approve_{message.from_user.id}"
+            )
+        ]
+    ])
 
-    if not results:
-        await bot.send_message(user_id, "❌ Объявления не найдены.")
+    await bot.send_message(
+        ADMIN_ID,
+        f"💰 Новый платёж\nID: {message.from_user.id}",
+        reply_markup=keyboard
+    )
+
+    await message.answer("⏳ Ожидайте подтверждения.")
+@dp.callback_query(lambda c: c.data.startswith("approve_"))
+async def approve_payment(callback: types.CallbackQuery):
+
+    if callback.from_user.id != ADMIN_ID:
         return
 
-    for title, price, link in results:
+    user_id = int(callback.data.split("_")[1])
+    expire = datetime.now() + timedelta(days=30)
 
-        cursor.execute("SELECT link FROM sent_links WHERE link=?", (link,))
-        if cursor.fetchone():
-            continue
+    cursor.execute(
+        "UPDATE users SET pro_until=? WHERE user_id=?",
+        (expire.isoformat(), user_id)
+    )
+    db.commit()
 
-        cursor.execute("INSERT INTO sent_links(link) VALUES(?)", (link,))
-        db.commit()
+    await bot.send_message(
+        user_id,
+        f"✅ Подписка активирована до {expire.strftime('%d.%m.%Y')}"
+    )
 
-        text = f"""
-🏠 {title}
-
-💰 {price}
-
-🔗 {link}
-"""
-        await bot.send_message(user_id, text)
-
+    await callback.message.edit_text("✅ Подписка выдана.")
 # ================== АВТОМОНИТОР ==================
 
 async def monitor():
@@ -148,12 +183,34 @@ async def monitor():
 
     while True:
         try:
-            cursor.execute("SELECT user_id FROM users WHERE active=1")
-            users = cursor.fetchall()
+cursor.execute("SELECT user_id, pro_until FROM users WHERE active=1")
+users = cursor.fetchall()
 
-            for (user_id,) in users:
+for user_id, pro_until in users:
 
-                await send_results(user_id, "https://krisha.kz/arenda/kvartiry/almaty/")
+    # если нет подписки — пропускаем
+    if not pro_until:
+        continue
+
+    expire = datetime.fromisoformat(pro_until)
+
+    # если срок вышел — отключаем
+    if expire < datetime.now():
+        cursor.execute(
+            "UPDATE users SET pro_until=NULL WHERE user_id=?",
+            (user_id,)
+        )
+        db.commit()
+
+        await bot.send_message(
+            user_id,
+            "❌ Ваша подписка закончилась.\n\n"
+            "Продлите доступ для продолжения работы."
+        )
+        continue
+
+    # если подписка активна — отправляем объявления
+    await send_results(user_id, "https://krisha.kz/arenda/kvartiry/almaty/")
 
             await asyncio.sleep(120)  # 2 минуты
 
