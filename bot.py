@@ -137,7 +137,6 @@ async def handler(message: types.Message):
 
 async def send_results(user_id, url):
     ads = await parse(url)
-
     for ad in ads:
         await bot.send_message(user_id, ad)
 
