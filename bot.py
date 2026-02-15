@@ -92,7 +92,26 @@ async def start(message: types.Message):
         "👋 Добро пожаловать!\n\nВыберите действие:",
         reply_markup=keyboard
     )
+    
+# ================= ПРОВЕРКА ПОДПИСКИ =================
 
+async def check_subscription(user_id):
+    cursor.execute(
+        "SELECT pro_until FROM users WHERE user_id=?",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+
+    if not row or not row[0]:
+        return False
+
+    expire = datetime.fromisoformat(row[0])
+
+    if expire < datetime.now():
+        return False
+
+    return True
+    
 # ================== ОБРАБОТКА КНОПОК ==================
 
 @dp.message()
