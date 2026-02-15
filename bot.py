@@ -133,9 +133,16 @@ async def handler(message: types.Message):
     if message.text == "🏡 Продажа":
         await send_results(user_id, "https://krisha.kz/prodazha/kvartiry/almaty/")
 
-# ================== ОТПРАВКА ==================
+# ================= ОТПРАВКА =================
 
 async def send_results(user_id, url):
+    ads = await parse(url)
+
+    for ad in ads:
+        await bot.send_message(user_id, ad)
+
+# ================= ОПЛАТА =================
+    
 @dp.message(lambda m: m.text == "💳 Я оплатил")
 async def user_paid(message: types.Message):
 
@@ -176,6 +183,7 @@ async def approve_payment(callback: types.CallbackQuery):
     )
 
     await callback.message.edit_text("✅ Подписка выдана.")
+    
 # ================== АВТОМОНИТОР ==================
 
 async def monitor():
