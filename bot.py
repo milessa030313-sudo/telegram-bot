@@ -207,8 +207,10 @@ async def approve_payment(callback: types.CallbackQuery):
 
 # ================= БЕСПЛАТНО 2 ЧАСА =================
 
-@dp.message(lambda m: m.text == "🎁 Бесплатно 2 часа")
+@dp.message()
 async def free_trial(message: types.Message):
+    if "Бесплатно 2 часа" not in message.text:
+        return
 
     user_id = message.from_user.id
     expire = datetime.now() + timedelta(hours=2)
