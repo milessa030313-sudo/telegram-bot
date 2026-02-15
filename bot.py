@@ -82,12 +82,14 @@ async def parse(url):
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    cursor.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (message.from_user.id,))
-    cursor.execute("UPDATE users SET active=1 WHERE user_id=?", (message.from_user.id,))
+    cursor.execute(
+        "INSERT OR IGNORE INTO users (user_id) VALUES (?)",
+        (message.from_user.id,)
+    )
     db.commit()
 
     await message.answer(
-        "🚀 Бот недвижимости запущен\nПроверка каждые 2 минуты",
+        "👋 Добро пожаловать!\n\nВыберите действие:",
         reply_markup=keyboard
     )
 
