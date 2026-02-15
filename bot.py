@@ -1,144 +1,116 @@
-import os
 import asyncio
-import sqlite3
-import requests
+import os
+import aiohttp
 from bs4 import BeautifulSoup
+
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
-from aiogram.utils import executor
+from aiogram.filters import Command
 
 TOKEN = os.getenv("TOKEN")
 
 bot = Bot(token=TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher()
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-# ================= БАЗА =================
+# =================== ПАРСЕР ===================
 
-db = sqlite3.connect("db.sqlite")
-cur = db.cursor()
+async def parse_krisha(url):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS users(
-id INTEGER PRIMARY KEY,
-district TEXT DEFAULT 'all'
-)
-""")
+    async with aiohttp.ClientSession(headers=headers) as session:
+        async with session.get(url) as response:
+            html = await response.text()
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS sent(
-link TEXT
-)
-""")
+    soup = BeautifulSoup(html, "html.parser")
 
-db.commit()
-
-# ================= МЕНЮ =================
-
-main_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-main_menu.add(
-    KeyboardButton("📍 Район"),
-)
-
-district_menu = ReplyKeyboardMarkup(resize_keyboard=True)
-district_menu.add(
-    KeyboardButton("Алмалинский"),
-    KeyboardButton("Бостандыкский"),
-)
-district_menu.add(
-    KeyboardButton("Все"),
-    KeyboardButton("⬅ Назад")
-)
-
-# ================= START =================
-
-@dp.message_handler(commands=["start"])
-async def start(message: types.Message):
-    cur.execute("INSERT OR IGNORE INTO users(id) VALUES(?)", (message.from_user.id,))
-    db.commit()
-    await message.answer("Бот недвижимости запущен 🚀", reply_markup=main_menu)
-
-# ================= ФИЛЬТР =================
-
-@dp.message_handler(lambda message: message.text == "📍 Район")
-async def district(message: types.Message):
-    await message.answer("Выберите район:", reply_markup=district_menu)
-
-@dp.message_handler(lambda message: message.text in ["Алмалинский","Бостандыкский","Все"])
-async def save_district(message: types.Message):
-    value = "all" if message.text == "Все" else message.text.lower()
-    cur.execute("UPDATE users SET district=? WHERE id=?", (value, message.from_user.id))
-    db.commit()
-    await message.answer("Фильтр сохранён ✅", reply_markup=main_menu)
-
-@dp.message_handler(lambda message: message.text == "⬅ Назад")
-async def back(message: types.Message):
-    await message.answer("Главное меню:", reply_markup=main_menu)
-
-# ================= ПАРСЕР =================
-
-def parse():
-    url = "https://krisha.kz/arenda/kvartiry/almaty/"
-    r = requests.get(url, headers=HEADERS)
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    cards = soup.select("div.a-card")
+    cards = soup.find_all("div", class_="a-card__inc")
 
     results = []
 
     for card in cards[:5]:
-        title = card.select_one("a.a-card__title").text.lower()
-        link = "https://krisha.kz" + card.select_one("a.a-card__title")["href"]
-        price = card.select_one("div.a-card__price").text.strip()
-        address = card.select_one("div.a-card__subtitle")
-        district = address.text.lower() if address else ""
+        title_tag = card.find("a", class_="a-card__title")
+        price_tag = card.find("div", class_="a-card__price")
 
-        results.append((title, link, price, district))
+        if not title_tag or not price_tag:
+            continue
+
+        title = title_tag.text.strip()
+        price = price_tag.text.strip()
+        link = "https://krisha.kz" + title_tag.get("href")
+
+        text = f"""
+🏠 Новое объявление:
+
+{title}
+💰 {price}
+
+🔗 {link}
+"""
+        results.append(text)
 
     return results
 
-# ================= МОНИТОР =================
 
-async def monitor():
-    await asyncio.sleep(10)
-    while True:
-        try:
-            listings = parse()
+# =================== START ===================
 
-            cur.execute("SELECT * FROM users")
-            users = cur.fetchall()
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    keyboard = types.ReplyKeyboardMarkup(
+        keyboard=[
+            [types.KeyboardButton(text="🏠 Аренда")],
+            [types.KeyboardButton(text="🏡 Продажа")]
+        ],
+        resize_keyboard=True
+    )
 
-            for title, link, price, district in listings:
+    await message.answer(
+        "🚀 Бот недвижимости\nВыберите категорию:",
+        reply_markup=keyboard
+    )
 
-                cur.execute("SELECT link FROM sent WHERE link=?", (link,))
-                if cur.fetchone():
-                    continue
 
-                cur.execute("INSERT INTO sent VALUES(?)", (link,))
-                db.commit()
+# =================== ОБРАБОТКА ===================
 
-                for user in users:
-                    uid, user_district = user
+@dp.message()
+async def handler(message: types.Message):
 
-                    if user_district != "all" and user_district not in district:
-                        continue
+    if message.text == "🏠 Аренда":
 
-                    await bot.send_message(
-                        uid,
-                        f"{title}\n💰 {price}\n🔗 {link}"
-                    )
+        await message.answer("🔎 Ищу аренду...")
 
-            await asyncio.sleep(300)
+        url = "https://krisha.kz/arenda/kvartiry/almaty/"
+        results = await parse_krisha(url)
 
-        except Exception as e:
-            print("Ошибка:", e)
-            await asyncio.sleep(60)
+        if not results:
+            await message.answer("❌ Объявления не найдены.")
+            return
 
-# ================= ЗАПУСК =================
+        for item in results:
+            await message.answer(item)
 
-async def on_startup(dp):
-    asyncio.create_task(monitor())
+
+    elif message.text == "🏡 Продажа":
+
+        await message.answer("🔎 Ищу продажу...")
+
+        url = "https://krisha.kz/prodazha/kvartiry/almaty/"
+        results = await parse_krisha(url)
+
+        if not results:
+            await message.answer("❌ Объявления не найдены.")
+            return
+
+        for item in results:
+            await message.answer(item)
+
+
+# =================== ЗАПУСК ===================
+
+async def main():
+    await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True, on_startup=on_startup)
+    asyncio.run(main())
