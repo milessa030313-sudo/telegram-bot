@@ -132,7 +132,7 @@ async def handler(message: types.Message):
 
     if message.text == "🏡 Продажа":
         await send_results(user_id, "https://krisha.kz/prodazha/kvartiry/almaty/")
-        return
+return
 
 # ================= ОТПРАВКА =================
 
