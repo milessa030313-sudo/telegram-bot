@@ -1,3 +1,140 @@
+import asyncio
+import sqlite3
+import requests
+from bs4 import BeautifulSoup
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, ReplyKeyboardMarkup
+from aiogram.filters import CommandStart
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+
+TOKEN = "ТВОЙ_ТОКЕН_СЮДА"
+
+bot = Bot(token=TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# ================= БАЗА =================
+
+db = sqlite3.connect("db.sqlite")
+cur = db.cursor()
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users(
+id INTEGER PRIMARY KEY,
+seller_type TEXT DEFAULT 'all',
+rooms TEXT DEFAULT 'all',
+district TEXT DEFAULT 'all',
+price_from INTEGER DEFAULT 0,
+price_to INTEGER DEFAULT 999999999
+)
+""")
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS sent(
+link TEXT
+)
+""")
+
+db.commit()
+
+# ================= FSM =================
+
+class PriceState(StatesGroup):
+    waiting_for_price_from = State()
+    waiting_for_price_to = State()
+
+# ================= МЕНЮ =================
+
+def menu():
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("🏠 Тип продавца", "🏢 Комнаты")
+    kb.row("📍 Район", "💰 Цена")
+    return kb
+
+# ================= СТАРТ =================
+
+@dp.message(CommandStart())
+async def start(msg: Message):
+    cur.execute("INSERT OR IGNORE INTO users(id) VALUES(?)", (msg.from_user.id,))
+    db.commit()
+    await msg.answer("Бот запущен 🚀", reply_markup=menu())
+
+# ================= ТИП ПРОДАВЦА =================
+
+@dp.message(F.text == "🏠 Тип продавца")
+async def seller_menu(msg: Message):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("Хозяин", "Агент")
+    kb.row("Компания", "Все")
+    await msg.answer("Выбери тип продавца:", reply_markup=kb)
+
+@dp.message(F.text.in_(["Хозяин","Агент","Компания","Все"]))
+async def save_seller(msg: Message):
+    mapping = {
+        "Хозяин":"owner",
+        "Агент":"agent",
+        "Компания":"company",
+        "Все":"all"
+    }
+    cur.execute("UPDATE users SET seller_type=? WHERE id=?",
+                (mapping[msg.text], msg.from_user.id))
+    db.commit()
+    await msg.answer("✅ Сохранено", reply_markup=menu())
+
+# ================= КОМНАТЫ =================
+
+@dp.message(F.text == "🏢 Комнаты")
+async def rooms_menu(msg: Message):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("1", "2", "3", "4+")
+    kb.row("Все")
+    await msg.answer("Выбери количество комнат:", reply_markup=kb)
+
+@dp.message(F.text.in_(["1","2","3","4+","Все"]))
+async def save_rooms(msg: Message):
+    value = "4" if msg.text == "4+" else msg.text
+    value = "all" if msg.text == "Все" else value
+    cur.execute("UPDATE users SET rooms=? WHERE id=?",
+                (value, msg.from_user.id))
+    db.commit()
+    await msg.answer("✅ Сохранено", reply_markup=menu())
+
+# ================= РАЙОН =================
+
+@dp.message(F.text == "📍 Район")
+async def district_menu(msg: Message):
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("Алмалинский","Бостандыкский")
+    kb.row("Ауэзовский","Медеуский")
+    kb.row("Все")
+    await msg.answer("Выбери район:", reply_markup=kb)
+
+@dp.message(F.text.in_(["Алмалинский","Бостандыкский",
+                        "Ауэзовский","Медеуский","Все"]))
+async def save_district(msg: Message):
+    value = "all" if msg.text == "Все" else msg.text.lower()
+    cur.execute("UPDATE users SET district=? WHERE id=?",
+                (value, msg.from_user.id))
+    db.commit()
+    await msg.answer("✅ Сохранено", reply_markup=menu())
+
+# ================= ЦЕНА =================
+
+@dp.message(F.text == "💰 Цена")
+async def price_start(msg: Message, state: FSMContext):
+    await msg.answer("Напиши цену ОТ:")
+    await state.set_state(PriceState.waiting_for_price_from)
+
+@dp.message(PriceState.waiting_for_price_from)
+async def save_price_from(msg: Message, state: FSMContext):
+    if not msg.text.isdigit():
+        return await msg.answer("Введи число")
+    await state.update_data(price_from=int(msg.text))
+    await msg.
 answer("Теперь напиши цену ДО:")
     await state.set_state(PriceState.waiting_for_price_to)
 
