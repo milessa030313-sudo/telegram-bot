@@ -204,6 +204,24 @@ async def approve_payment(callback: types.CallbackQuery):
     )
 
     await callback.message.edit_text("✅ Подписка выдана.")
+
+# ================= БЕСПЛАТНО 2 ЧАСА =================
+
+@dp.message(lambda m: m.text == "🎁 Бесплатно 2 часа")
+async def free_trial(message: types.Message):
+
+    user_id = message.from_user.id
+    expire = datetime.now() + timedelta(hours=2)
+
+    cursor.execute(
+        "UPDATE users SET pro_until=? WHERE user_id=?",
+        (expire.isoformat(), user_id)
+    )
+    db.commit()
+
+    await message.answer(
+        f"✅ Бесплатный доступ активирован до {expire.strftime('%H:%M %d.%m.%Y')}"
+    )
     
 # ================== АВТОМОНИТОР ==================
 
