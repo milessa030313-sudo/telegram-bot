@@ -1,234 +1,103 @@
-import asyncio
-import os
-import aiohttp
-import asyncpg
-from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
+answer("Теперь напиши цену ДО:")
+    await state.set_state(PriceState.waiting_for_price_to)
 
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
-from aiogram.types import LabeledPrice
+@dp.message(PriceState.waiting_for_price_to)
+async def save_price_to(msg: Message, state: FSMContext):
+    if not msg.text.isdigit():
+        return await msg.answer("Введи число")
+    data = await state.get_data()
+    price_from = data["price_from"]
+    price_to = int(msg.text)
 
-TOKEN = os.getenv("TOKEN")
-PROVIDER_TOKEN = os.getenv("PROVIDER_TOKEN")
-DATABASE_URL = os.getenv("DATABASE_URL")
+    cur.execute("""
+    UPDATE users SET price_from=?, price_to=? WHERE id=?
+    """, (price_from, price_to, msg.from_user.id))
+    db.commit()
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+    await state.clear()
+    await msg.answer("✅ Диапазон цены сохранён", reply_markup=menu())
 
-db = None
+# ================= ПАРСЕР =================
 
-CHECK_INTERVAL = 30
-SEND_DELAY = 0.05
-MAX_PER_LOOP = 30
+def parse():
+    url = "https://krisha.kz/arenda/kvartiry/almaty/"
+    r = requests.get(url, headers=HEADERS)
+    soup = BeautifulSoup(r.text,"html.parser")
 
-# ======================= БАЗА =======================
+    card = soup.select_one("div.a-card")
+    if not card:
+        return None
 
-async def init_db():
-    await db.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id BIGINT PRIMARY KEY,
-        tariff TEXT,
-        expires_at TIMESTAMP
-    )
-    """)
+    title = card.select_one("a.a-card__title").text.lower()
+    link = "https://krisha.kz" + card.select_one("a.a-card__title")["href"]
+    img = card.select_one("img")["src"]
 
-async def set_subscription(user_id, tariff, days=30):
-    expires = datetime.utcnow() + timedelta(days=days)
-    await db.execute("""
-    INSERT INTO users (user_id, tariff, expires_at)
-    VALUES ($1, $2, $3)
-    ON CONFLICT (user_id)
-    DO UPDATE SET tariff=$2, expires_at=$3
-    """, user_id, tariff, expires)
+    price_block = card.select_one("div.a-card__price")
+    price = int(price_block.text.replace("₸","").replace(" ",""))
 
-async def get_active_users():
-    rows = await db.fetch("""
-    SELECT user_id, tariff FROM users
-    WHERE expires_at > NOW()
-    """)
-    return rows
+    address = card.select_one("div.a-card__subtitle")
+    district = address.text.lower() if address else ""
 
-async def get_user_status(user_id):
-    row = await db.fetchrow("""
-    SELECT tariff, expires_at FROM users
-    WHERE user_id=$1
-    """, user_id)
-    return row
+    seller_block = card.select_one("div.a-card__owner")
+    seller = seller_block.text.lower() if seller_block else ""
 
-# ======================= ПАРСЕР =======================
+    rooms = "unknown"
+    if "1-комн" in title: rooms="1"
+    elif "2-комн" in title: rooms="2"
+    elif "3-комн" in title: rooms="3"
+    elif "4-комн" in title or "5-комн" in title: rooms="4"
 
-async def parse_krisha(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
+    return title, link, img, seller, rooms, price, district
 
-    async with aiohttp.ClientSession(headers=headers) as session:
-        async with session.get(url) as response:
-            html = await response.text()
+# ================= МОНИТОР =================
 
-    soup = BeautifulSoup(html, "html.parser")
-    cards = soup.find_all("div", class_="a-card__inc")
-
-    results = []
-
-    for card in cards[:8]:
-        title_tag = card.find("a", class_="a-card__title")
-        price_tag = card.find("div", class_="a-card__price")
-
-        if not title_tag or not price_tag:
+async def monitor():
+    while True:
+        data = parse()
+        if not data:
+            await asyncio.sleep(300)
             continue
 
-        title = title_tag.text.strip()
-        price = price_tag.text.strip()
-        link = "https://krisha.kz" + title_tag.get("href")
+        title, link, img, seller, rooms, price, district = data
 
-        results.append((title, price, link))
+        cur.execute("SELECT link FROM sent WHERE link=?", (link,))
+        if cur.fetchone():
+            await asyncio.sleep(300)
+            continue
 
-    return results
+        cur.execute("INSERT INTO sent VALUES(?)",(link,))
+        db.commit()
 
-# ======================= АНТИСПАМ ОТПРАВКА =======================
+        cur.execute("SELECT * FROM users")
+        users = cur.fetchall()
 
-async def safe_send(user_id, text):
-    try:
-        await bot.send_message(user_id, text)
-        await asyncio.sleep(SEND_DELAY)
-    except:
-        pass
+        for user in users:
+            uid, seller_type, user_rooms, user_district, p_from, p_to = user
 
-# ======================= АВТО-РАССЫЛКА =======================
+            if seller_type != "all":
+                if seller_type == "owner" and "хозяин" not in seller: continue
+                if seller_type == "agent" and "агент" not in seller: continue
+                if seller_type == "company" and "компан" not in seller: continue
 
-sent_links = set()
+            if user_rooms != "all" and rooms != user_rooms:
+                continue
 
-async def auto_parser():
-    global sent_links
+            if user_district != "all" and user_district not in district:
+                continue
 
-    while True:
-        print("🔄 Проверка объявлений...")
+            if not (p_from <= price <= p_to):
+                continue
 
-        users = await get_active_users()
-        results = await parse_krisha(
-            "https://krisha.kz/prodazha/kvartiry/almaty/"
-        )
+            await bot.send_photo(uid, img,
+                caption=f"{title}\n\n💰 {price} ₸\n🔗 {link}")
 
-        counter = 0
+        await asyncio.sleep(300)
 
-        for title, price, link in results:
-            if link not in sent_links:
-                sent_links.add(link)
-
-                text = f"""
-🔥 Новое объявление
-
-🏠 {title}
-💰 {price}
-🔗 {link}
-"""
-
-                for user in users:
-                    await safe_send(user["user_id"], text)
-
-                counter += 1
-                if counter >= MAX_PER_LOOP:
-                    break
-
-        await asyncio.sleep(CHECK_INTERVAL)
-
-# ======================= КОМАНДЫ =======================
-
-@dp.message(Command("start"))
-async def start(message: types.Message):
-
-    keyboard = types.ReplyKeyboardMarkup(
-        keyboard=[
-            [types.KeyboardButton(text="💎 Купить Standard (1990₸)")],
-            [types.KeyboardButton(text="👑 Купить Pro (3990₸)")],
-            [types.KeyboardButton(text="📊 Мой статус")]
-        ],
-        resize_keyboard=True
-    )
-
-    await message.answer(
-        "Добро пожаловать в PRO-бот недвижимости.\nВыберите тариф:",
-        reply_markup=keyboard
-    )
-
-# ======================= ОПЛАТА =======================
-
-@dp.message(lambda m: "Standard" in m.text)
-async def buy_standard(message: types.Message):
-
-    prices = [LabeledPrice(label="Standard 30 дней", amount=199000)]
-
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title="Standard подписка",
-        description="30 дней авто-уведомлений",
-        payload="standard",
-        provider_token=PROVIDER_TOKEN,
-        currency="KZT",
-        prices=prices,
-        start_parameter="standard"
-    )
-
-@dp.message(lambda m: "Pro" in m.text)
-async def buy_pro(message: types.Message):
-
-    prices = [LabeledPrice(label="Pro 30 дней", amount=399000)]
-
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title="Pro подписка",
-        description="Расширенные уведомления 30 дней",
-        payload="pro",
-        provider_token=PROVIDER_TOKEN,
-        currency="KZT",
-        prices=prices,
-        start_parameter="pro"
-    )
-
-@dp.pre_checkout_query()
-async def pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-
-@dp.message(lambda m: m.successful_payment)
-async def successful_payment(message: types.Message):
-
-    payload = message.successful_payment.invoice_payload
-
-    if payload == "standard":
-        await set_subscription(message.from_user.id, "standard")
-    elif payload == "pro":
-        await set_subscription(message.from_user.id, "pro")
-
-    await message.answer("✅ Оплата успешна. Подписка активирована на 30 дней.")
-
-# ======================= СТАТУС =======================
-
-@dp.message(lambda m: m.text == "📊 Мой статус")
-async def status(message: types.Message):
-
-    data = await get_user_status(message.from_user.id)
-
-    if not data:
-        await message.answer("❌ Подписки нет.")
-        return
-
-    tariff = data["tariff"]
-    expires = data["expires_at"]
-
-    await message.answer(
-        f"📊 Тариф: {tariff}\n⏳ Активна до: {expires.strftime('%d.%m.%Y %H:%M')}"
-    )
-
-# ======================= MAIN =======================
+# ================= ЗАПУСК =================
 
 async def main():
-    global db
-    db = await asyncpg.connect(DATABASE_URL)
-    await init_db()
-
-    asyncio.create_task(auto_parser())
+    asyncio.create_task(monitor())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
