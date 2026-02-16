@@ -20,7 +20,8 @@ cursor = db.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users(
     user_id INTEGER PRIMARY KEY,
-    active INTEGER DEFAULT 1
+    active INTEGER DEFAULT 1,
+    mode TEXT DEFAULT 'rent'
 )
 """)
 
@@ -82,12 +83,12 @@ async def start(message: types.Message):
 
     await message.answer(
         "🚀 Бот недвижимости Алматы\n"
-        "Показывает квартиры ТОЛЬКО от хозяев\n"
-        "Проверка каждые 2 минуты",
+        "Квартиры ТОЛЬКО от хозяев\n"
+        "Авто‑проверка каждые 2 минуты",
         reply_markup=keyboard
     )
 
-# ================== ОБРАБОТКА КНОПОК ==================
+# ================== ОБРАБОТКА ==================
 
 @dp.message()
 async def handler(message: types.Message):
@@ -107,19 +108,27 @@ async def handler(message: types.Message):
         await message.answer("✅ Авто‑поиск снова активен.")
         return
 
-    # АРЕНДА ОТ ХОЗЯЕВ
+    # АРЕНДА
     if message.text == "🏠 Аренда (от хозяев)":
+        cursor.execute("UPDATE users SET mode='rent' WHERE user_id=?", (user_id,))
+        db.commit()
+
         await send_results(
             user_id,
             "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
         )
+        return
 
-    # ПРОДАЖА ОТ ХОЗЯЕВ
+    # ПРОДАЖА
     if message.text == "🏡 Продажа (от хозяев)":
+        cursor.execute("UPDATE users SET mode='sale' WHERE user_id=?", (user_id,))
+        db.commit()
+
         await send_results(
             user_id,
             "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
         )
+        return
 
 # ================== ОТПРАВКА ==================
 
@@ -145,23 +154,26 @@ async def send_results(user_id, url):
 """
         await bot.send_message(user_id, text)
 
-# ================== АВТОМОНИТОР ==================
+# ================== МОНИТОР ==================
 
 async def monitor():
     await asyncio.sleep(10)
 
     while True:
         try:
-            cursor.execute("SELECT user_id FROM users WHERE active=1")
+            cursor.execute("SELECT user_id, mode FROM users WHERE active=1")
             users = cursor.fetchall()
 
-            for (user_id,) in users:
-                await send_results(
-                    user_id,
-                    "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
-                )
+            for user_id, mode in users:
 
-            await asyncio.sleep(120)  # 2 минуты
+                if mode == "rent":
+                    url = "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
+                else:
+                    url = "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
+
+                await send_results(user_id, url)
+
+            await asyncio.sleep(120)
 
         except Exception as e:
             print("Ошибка:", e)
