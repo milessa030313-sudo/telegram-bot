@@ -36,8 +36,8 @@ db.commit()
 
 keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="🏠 Аренда")],
-        [KeyboardButton(text="🏡 Продажа")],
+        [KeyboardButton(text="🏠 Аренда (от хозяев)")],
+        [KeyboardButton(text="🏡 Продажа (от хозяев)")],
         [KeyboardButton(text="⛔ Стоп"), KeyboardButton(text="▶️ Запустить")]
     ],
     resize_keyboard=True
@@ -52,7 +52,7 @@ async def parse(url):
         async with session.get(url) as response:
             html = await response.text()
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
     cards = soup.select("div.a-card")
 
     results = []
@@ -81,7 +81,9 @@ async def start(message: types.Message):
     db.commit()
 
     await message.answer(
-        "🚀 Бот недвижимости запущен\nПроверка каждые 2 минуты",
+        "🚀 Бот недвижимости Алматы\n"
+        "Показывает квартиры ТОЛЬКО от хозяев\n"
+        "Проверка каждые 2 минуты",
         reply_markup=keyboard
     )
 
@@ -89,7 +91,6 @@ async def start(message: types.Message):
 
 @dp.message()
 async def handler(message: types.Message):
-
     user_id = message.from_user.id
 
     # СТОП
@@ -106,17 +107,23 @@ async def handler(message: types.Message):
         await message.answer("✅ Авто‑поиск снова активен.")
         return
 
-    # РУЧНОЙ ЗАПРОС
-    if message.text == "🏠 Аренда":
-        await send_results(user_id, "https://krisha.kz/arenda/kvartiry/almaty/")
+    # АРЕНДА ОТ ХОЗЯЕВ
+    if message.text == "🏠 Аренда (от хозяев)":
+        await send_results(
+            user_id,
+            "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
+        )
 
-    if message.text == "🏡 Продажа":
-        await send_results(user_id, "https://krisha.kz/prodazha/kvartiry/almaty/")
+    # ПРОДАЖА ОТ ХОЗЯЕВ
+    if message.text == "🏡 Продажа (от хозяев)":
+        await send_results(
+            user_id,
+            "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
+        )
 
 # ================== ОТПРАВКА ==================
 
 async def send_results(user_id, url):
-
     results = await parse(url)
 
     if not results:
@@ -124,7 +131,6 @@ async def send_results(user_id, url):
         return
 
     for title, price, link in results:
-
         cursor.execute("SELECT link FROM sent_links WHERE link=?", (link,))
         if cursor.fetchone():
             continue
@@ -134,9 +140,7 @@ async def send_results(user_id, url):
 
         text = f"""
 🏠 {title}
-
 💰 {price}
-
 🔗 {link}
 """
         await bot.send_message(user_id, text)
@@ -152,8 +156,10 @@ async def monitor():
             users = cursor.fetchall()
 
             for (user_id,) in users:
-
-                await send_results(user_id, "https://krisha.kz/arenda/kvartiry/almaty/")
+                await send_results(
+                    user_id,
+                    "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
+                )
 
             await asyncio.sleep(120)  # 2 минуты
 
