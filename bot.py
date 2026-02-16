@@ -38,9 +38,15 @@ db.commit()
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🏠 Аренда"), KeyboardButton(text="🏡 Продажа")],
-        [KeyboardButton(text="1️⃣ 1 комната"),
-         KeyboardButton(text="2️⃣ 2 комнаты"),
-         KeyboardButton(text="3️⃣ 3-4 комнаты")],
+        [
+            KeyboardButton(text="1️⃣ 1"),
+            KeyboardButton(text="2️⃣ 2"),
+            KeyboardButton(text="3️⃣ 3")
+        ],
+        [
+            KeyboardButton(text="4️⃣ 4"),
+            KeyboardButton(text="5️⃣ 5+")
+        ],
         [KeyboardButton(text="⛔ Стоп")]
     ],
     resize_keyboard=True
@@ -55,18 +61,16 @@ def build_url(mode, rooms):
     else:
         base = "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
 
-    if rooms == "1":
-        return base + "&das[live.rooms]=1"
-    elif rooms == "2":
-        return base + "&das[live.rooms]=2"
+    if rooms == "5":
+        return base + "&das[live.rooms]=5"
     else:
-        return base + "&das[live.rooms]=3&das[live.rooms]=4"
-
+        return base + f"&das[live.rooms]={rooms}"
 
 # ================== ПАРСЕР ==================
 
 async def parse(url):
     headers = {"User-Agent": "Mozilla/5.0"}
+
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.get(url) as response:
             html = await response.text()
@@ -76,7 +80,7 @@ async def parse(url):
 
     results = []
 
-    for card in cards:   # вся первая страница
+    for card in cards:
         title_tag = card.select_one("a.a-card__title")
         price_tag = card.select_one("div.a-card__price")
 
@@ -91,7 +95,6 @@ async def parse(url):
 
     return results
 
-
 # ================== СТАРТ ==================
 
 @dp.message(Command("start"))
@@ -103,11 +106,10 @@ async def start(message: types.Message):
     await message.answer(
         "🏠 Бот недвижимости Алматы\n"
         "Только от хозяев\n"
-        "После выбора фильтра сразу приходит вся первая страница\n"
+        "После выбора фильтра приходит вся первая страница\n"
         "Далее проверка каждые 2 минуты",
         reply_markup=main_keyboard
     )
-
 
 # ================== ОБРАБОТКА ==================
 
@@ -138,15 +140,19 @@ async def handler(message: types.Message):
     # КОМНАТЫ
     room_value = None
 
-    if message.text == "1️⃣ 1 комната":
+    if message.text == "1️⃣ 1":
         room_value = "1"
-    elif message.text == "2️⃣ 2 комнаты":
+    elif message.text == "2️⃣ 2":
         room_value = "2"
-    elif message.text == "3️⃣ 3-4 комнаты":
+    elif message.text == "3️⃣ 3":
         room_value = "3"
+    elif message.text == "4️⃣ 4":
+        room_value = "4"
+    elif message.text == "5️⃣ 5+":
+        room_value = "5"
 
     if room_value:
-        # очищаем старые ссылки
+        # очистка старых ссылок при смене фильтра
         cursor.execute("DELETE FROM sent_links")
         db.commit()
 
@@ -160,11 +166,10 @@ async def handler(message: types.Message):
 
         await message.answer("🔎 Ищем объявления...\n")
 
-        # СРАЗУ отправляем всю первую страницу
+        # сразу отправляем первую страницу
         await send_results(user_id, url)
 
         return
-
 
 # ================== ОТПРАВКА ==================
 
@@ -193,7 +198,6 @@ async def send_results(user_id, url):
 
         await bot.send_message(user_id, text)
 
-
 # ================== МОНИТОР ==================
 
 async def monitor():
@@ -208,12 +212,11 @@ async def monitor():
                 url = build_url(mode, rooms)
                 await send_results(user_id, url)
 
-            await asyncio.sleep(120)  # каждые 2 минуты
+            await asyncio.sleep(120)
 
         except Exception as e:
             print("Ошибка:", e)
             await asyncio.sleep(60)
-
 
 # ================== ЗАПУСК ==================
 
