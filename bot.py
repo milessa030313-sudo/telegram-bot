@@ -8,6 +8,7 @@ from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 TOKEN = os.getenv("TOKEN")
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -19,8 +20,8 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS users(
     user_id INTEGER PRIMARY KEY,
     active INTEGER DEFAULT 1,
-    mode TEXT,
-    rooms TEXT
+    mode TEXT DEFAULT 'rent',
+    rooms TEXT DEFAULT '1'
 )
 """)
 
@@ -33,24 +34,37 @@ CREATE TABLE IF NOT EXISTS sent_links(
 db.commit()
 
 # ================== КНОПКИ ==================
+
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🏠 Аренда"), KeyboardButton(text="🏡 Продажа")],
+        [KeyboardButton(text="1️⃣ 1 комната"),
+         KeyboardButton(text="2️⃣ 2 комнаты"),
+         KeyboardButton(text="3️⃣ 3-4 комнаты")],
         [KeyboardButton(text="⛔ Стоп")]
     ],
     resize_keyboard=True
 )
 
-rooms_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="1️⃣ 1 комната")],
-        [KeyboardButton(text="2️⃣ 2 комнаты")],
-        [KeyboardButton(text="3️⃣ 3-4 комнаты")]
-    ],
-    resize_keyboard=True
-)
+# ================== URL ==================
+
+def build_url(mode, rooms):
+
+    if mode == "rent":
+        base = "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
+    else:
+        base = "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
+
+    if rooms == "1":
+        return base + "&das[live.rooms]=1"
+    elif rooms == "2":
+        return base + "&das[live.rooms]=2"
+    else:
+        return base + "&das[live.rooms]=3&das[live.rooms]=4"
+
 
 # ================== ПАРСЕР ==================
+
 async def parse(url):
     headers = {"User-Agent": "Mozilla/5.0"}
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -62,7 +76,7 @@ async def parse(url):
 
     results = []
 
-    for card in cards:   # ВСЯ первая страница
+    for card in cards:   # вся первая страница
         title_tag = card.select_one("a.a-card__title")
         price_tag = card.select_one("div.a-card__price")
 
@@ -77,72 +91,65 @@ async def parse(url):
 
     return results
 
-# ================== URL С ФИЛЬТРАМИ ==================
-def build_url(mode, rooms):
-    if mode == "rent":
-        base = "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
-    else:
-        base = "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
-
-    if rooms == "1":
-        base += "&das[live.rooms]=1"
-    elif rooms == "2":
-        base += "&das[live.rooms]=2"
-    elif rooms == "3-4":
-        base += "&das[live.rooms]=3,4"
-
-    return base
 
 # ================== СТАРТ ==================
+
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    cursor.execute("INSERT OR IGNORE INTO users(user_id, active) VALUES(?,1)", (message.from_user.id,))
+    cursor.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (message.from_user.id,))
+    cursor.execute("UPDATE users SET active=1 WHERE user_id=?", (message.from_user.id,))
     db.commit()
 
     await message.answer(
         "🏠 Бот недвижимости Алматы\n"
-        "Только от хозяев\n\n"
-        "Выберите тип:",
+        "Только от хозяев\n"
+        "После выбора фильтра сразу приходит вся первая страница\n"
+        "Далее проверка каждые 2 минуты",
         reply_markup=main_keyboard
     )
 
+
 # ================== ОБРАБОТКА ==================
+
 @dp.message()
 async def handler(message: types.Message):
     user_id = message.from_user.id
-    text = message.text
 
     # СТОП
-    if text == "⛔ Стоп":
+    if message.text == "⛔ Стоп":
         cursor.execute("UPDATE users SET active=0 WHERE user_id=?", (user_id,))
         db.commit()
-        await message.answer("❌ Авто‑поиск остановлен.")
+        await message.answer("❌ Авто-поиск остановлен.")
         return
 
-    # ВЫБОР ТИПА
-    if text == "🏠 Аренда":
-        cursor.execute("UPDATE users SET mode='rent' WHERE user_id=?", (user_id,))
+    # РЕЖИМ
+    if message.text == "🏠 Аренда":
+        cursor.execute("UPDATE users SET mode='rent', active=1 WHERE user_id=?", (user_id,))
         db.commit()
-        await message.answer("Выберите количество комнат:", reply_markup=rooms_keyboard)
+        await message.answer("Выберите количество комнат:")
         return
 
-    if text == "🏡 Продажа":
-        cursor.execute("UPDATE users SET mode='sale' WHERE user_id=?", (user_id,))
+    if message.text == "🏡 Продажа":
+        cursor.execute("UPDATE users SET mode='sale', active=1 WHERE user_id=?", (user_id,))
         db.commit()
-        await message.answer("Выберите количество комнат:", reply_markup=rooms_keyboard)
+        await message.answer("Выберите количество комнат:")
         return
 
-    # ВЫБОР КОМНАТ
+    # КОМНАТЫ
     room_value = None
 
-    if "1 комната" in text:
+    if message.text == "1️⃣ 1 комната":
         room_value = "1"
-    elif "2 комнаты" in text:
+    elif message.text == "2️⃣ 2 комнаты":
         room_value = "2"
-    elif "3-4 комнаты" in text:
-        room_value = "3-4"
+    elif message.text == "3️⃣ 3-4 комнаты":
+        room_value = "3"
 
     if room_value:
+        # очищаем старые ссылки
+        cursor.execute("DELETE FROM sent_links")
+        db.commit()
+
         cursor.execute("UPDATE users SET rooms=?, active=1 WHERE user_id=?", (room_value, user_id))
         db.commit()
 
@@ -151,15 +158,18 @@ async def handler(message: types.Message):
 
         url = build_url(mode, room_value)
 
-        await message.answer("🔎 Ищем объявления...\n", reply_markup=main_keyboard)
+        await message.answer("🔎 Ищем объявления...\n")
 
-        # 🔥 МГНОВЕННАЯ отправка всей страницы
+        # СРАЗУ отправляем всю первую страницу
         await send_results(user_id, url)
 
         return
 
+
 # ================== ОТПРАВКА ==================
+
 async def send_results(user_id, url):
+
     results = await parse(url)
 
     if not results:
@@ -167,6 +177,7 @@ async def send_results(user_id, url):
         return
 
     for title, price, link in results:
+
         cursor.execute("SELECT link FROM sent_links WHERE link=?", (link,))
         if cursor.fetchone():
             continue
@@ -174,10 +185,17 @@ async def send_results(user_id, url):
         cursor.execute("INSERT INTO sent_links(link) VALUES(?)", (link,))
         db.commit()
 
-        text = f"🏠 {title}\n💰 {price}\n🔗 {link}"
+        text = f"""
+🏠 {title}
+💰 {price}
+🔗 {link}
+"""
+
         await bot.send_message(user_id, text)
 
+
 # ================== МОНИТОР ==================
+
 async def monitor():
     await asyncio.sleep(10)
 
@@ -187,19 +205,18 @@ async def monitor():
             users = cursor.fetchall()
 
             for user_id, mode, rooms in users:
-                if not mode or not rooms:
-                    continue
-
                 url = build_url(mode, rooms)
                 await send_results(user_id, url)
 
-            await asyncio.sleep(120)
+            await asyncio.sleep(120)  # каждые 2 минуты
 
         except Exception as e:
             print("Ошибка:", e)
             await asyncio.sleep(60)
 
+
 # ================== ЗАПУСК ==================
+
 async def main():
     asyncio.create_task(monitor())
     await dp.start_polling(bot)
