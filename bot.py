@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS users(
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS sent_links(
-    link TEXT PRIMARY KEY
+    link TEXT,
+    type TEXT,
+    PRIMARY KEY(link, type)
 )
 """)
 
@@ -39,7 +41,7 @@ keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🏠 Аренда (от хозяев)")],
         [KeyboardButton(text="🏡 Продажа (от хозяев)")],
-        [KeyboardButton(text="⛔ Стоп"), KeyboardButton(text="▶️ Запустить")]
+        [KeyboardButton(text="⛔ Стоп")]
     ],
     resize_keyboard=True
 )
@@ -47,7 +49,11 @@ keyboard = ReplyKeyboardMarkup(
 # ================== ПАРСЕР ==================
 
 async def parse(url):
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/120.0.0.0 Safari/537.36"
+    }
 
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.get(url) as response:
@@ -58,7 +64,7 @@ async def parse(url):
 
     results = []
 
-    for card in cards[:5]:
+    for card in cards:
         title_tag = card.select_one("a.a-card__title")
         price_tag = card.select_one("div.a-card__price")
 
@@ -101,50 +107,61 @@ async def handler(message: types.Message):
         await message.answer("❌ Авто‑поиск остановлен.")
         return
 
-    # ЗАПУСТИТЬ
-    if message.text == "▶️ Запустить":
-        cursor.execute("UPDATE users SET active=1 WHERE user_id=?", (user_id,))
-        db.commit()
-        await message.answer("✅ Авто‑поиск снова активен.")
-        return
-
-    # АРЕНДА
+    # АРЕНДА (авто включается)
     if message.text == "🏠 Аренда (от хозяев)":
-        cursor.execute("UPDATE users SET mode='rent' WHERE user_id=?", (user_id,))
+        cursor.execute(
+            "UPDATE users SET mode='rent', active=1 WHERE user_id=?",
+            (user_id,)
+        )
         db.commit()
+
+        await message.answer("✅ Включен авто‑поиск аренды.")
 
         await send_results(
             user_id,
-            "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
+            "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1",
+            "rent"
         )
         return
 
-    # ПРОДАЖА
+    # ПРОДАЖА (авто включается)
     if message.text == "🏡 Продажа (от хозяев)":
-        cursor.execute("UPDATE users SET mode='sale' WHERE user_id=?", (user_id,))
+        cursor.execute(
+            "UPDATE users SET mode='sale', active=1 WHERE user_id=?",
+            (user_id,)
+        )
         db.commit()
+
+        await message.answer("✅ Включен авто‑поиск продажи.")
 
         await send_results(
             user_id,
-            "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
+            "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1",
+            "sale"
         )
         return
 
 # ================== ОТПРАВКА ==================
 
-async def send_results(user_id, url):
+async def send_results(user_id, url, listing_type):
     results = await parse(url)
 
     if not results:
-        await bot.send_message(user_id, "❌ Объявления не найдены.")
         return
 
     for title, price, link in results:
-        cursor.execute("SELECT link FROM sent_links WHERE link=?", (link,))
+        cursor.execute(
+            "SELECT link FROM sent_links WHERE link=? AND type=?",
+            (link, listing_type)
+        )
+
         if cursor.fetchone():
             continue
 
-        cursor.execute("INSERT INTO sent_links(link) VALUES(?)", (link,))
+        cursor.execute(
+            "INSERT INTO sent_links(link, type) VALUES(?, ?)",
+            (link, listing_type)
+        )
         db.commit()
 
         text = f"""
@@ -168,10 +185,12 @@ async def monitor():
 
                 if mode == "rent":
                     url = "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
+                    listing_type = "rent"
                 else:
                     url = "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
+                    listing_type = "sale"
 
-                await send_results(user_id, url)
+                await send_results(user_id, url, listing_type)
 
             await asyncio.sleep(120)
 
