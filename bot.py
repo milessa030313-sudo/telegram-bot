@@ -1,179 +1,148 @@
+import os
 import asyncio
-import sqlite3
 from datetime import datetime, timedelta
 
+import asyncpg
+from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import Command
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from fastapi import FastAPI, Request
+import uvicorn
 
-TOKEN = "ТВОЙ_ТОКЕН"
-ADMIN_ID = 7799445685
+load_dotenv()
 
-bot = Bot(TOKEN)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS").split(",")))
+
+bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
+app = FastAPI()
 
-# ================= БАЗА =================
+# ---------------- DATABASE ----------------
 
-db = sqlite3.connect("users.db")
-cursor = db.cursor()
+class DB:
+    pool = None
 
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    pro_until TEXT,
-    active INTEGER DEFAULT 1
-)
-""")
-db.commit()
+    @classmethod
+    async def connect(cls):
+        cls.pool = await asyncpg.create_pool(DATABASE_URL)
 
-# ================= КЛАВИАТУРА =================
+    @classmethod
+    async def create_tables(cls):
+        async with cls.pool.acquire() as conn:
+            await conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT UNIQUE,
+                username TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                subscription_until TIMESTAMP,
+                tariff TEXT DEFAULT 'free',
+                trial_used BOOLEAN DEFAULT FALSE,
+                region TEXT,
+                price_from INTEGER,
+                price_to INTEGER
+            );
+            """)
 
-keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="🏠 Аренда"), KeyboardButton(text="🏡 Продажа")],
-        [KeyboardButton(text="🎁 Бесплатно 2 часа")],
-        [KeyboardButton(text="💳 Я оплатил")]
-    ],
-    resize_keyboard=True
-)
+# ---------------- KEYBOARD ----------------
 
-# ================= ПАРСЕР (заглушка) =================
+def main_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏠 Поиск квартир Алматы", callback_data="search")],
+        [InlineKeyboardButton(text="⭐ Купить Standard (4990₸)", callback_data="buy_standard")],
+        [InlineKeyboardButton(text="🔥 Купить Pro (9990₸)", callback_data="buy_pro")],
+        [InlineKeyboardButton(text="🎁 Бесплатно 2 часа", callback_data="trial")]
+    ])
 
-async def parse(url):
-    return [
-        "🏠 Объявление 1",
-        "🏠 Объявление 2",
-        "🏠 Объявление 3"
-    ]
-
-async def send_results(user_id, url):
-    ads = await parse(url)
-    for ad in ads:
-        await bot.send_message(user_id, ad)
-
-# ================= ПРОВЕРКА ДОСТУПА =================
-
-async def has_access(user_id):
-    cursor.execute("SELECT pro_until FROM users WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-
-    if not row or not row[0]:
-        return False
-
-    expire = datetime.fromisoformat(row[0])
-    return expire > datetime.now()
-
-# ================= START =================
+# ---------------- START ----------------
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
+    async with DB.pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users (user_id, username)
+            VALUES ($1,$2)
+            ON CONFLICT (user_id) DO NOTHING
+        """, message.from_user.id, message.from_user.username)
 
-    cursor.execute(
-        "INSERT OR IGNORE INTO users (user_id, active) VALUES (?, 1)",
-        (message.from_user.id,)
+    await message.answer(
+        "Бот недвижимости по Алматы.\n\n"
+        "Выберите действие:",
+        reply_markup=main_menu()
     )
-    db.commit()
 
-    await message.answer("👋 Добро пожаловать!\nВыберите действие:", reply_markup=keyboard)
+# ---------------- TRIAL ----------------
 
-# ================= ОБЩИЙ HANDLER =================
-
-@dp.message()
-async def handler(message: types.Message):
-
-    user_id = message.from_user.id
-
-    # создаём пользователя если нет
-    cursor.execute(
-        "INSERT OR IGNORE INTO users (user_id, active) VALUES (?, 1)",
-        (user_id,)
-    )
-    db.commit()
-
-    # 🎁 Бесплатно
-    if message.text == "🎁 Бесплатно 2 часа":
-        expire = datetime.now() + timedelta(hours=2)
-
-        cursor.execute(
-            "UPDATE users SET pro_until=? WHERE user_id=?",
-            (expire.isoformat(), user_id)
-        )
-        db.commit()
-
-        await message.answer(f"✅ Доступ до {expire.strftime('%H:%M %d.%m.%Y')}")
-        return
-
-    # 💳 Оплата
-    if message.text == "💳 Я оплатил":
-
-        keyboard_admin = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(
-                    text="✅ Подтвердить",
-                    callback_data=f"approve_{user_id}"
-                )]
-            ]
+@dp.callback_query(lambda c: c.data == "trial")
+async def trial(callback: types.CallbackQuery):
+    async with DB.pool.acquire() as conn:
+        user = await conn.fetchrow(
+            "SELECT trial_used FROM users WHERE user_id=$1",
+            callback.from_user.id
         )
 
-        await bot.send_message(
-            ADMIN_ID,
-            f"💰 Новый платёж\nID: {user_id}",
-            reply_markup=keyboard_admin
-        )
-
-        await message.answer("⏳ Ожидайте подтверждения")
-        return
-
-    # 🏠 Аренда
-    if message.text == "🏠 Аренда":
-
-        if not await has_access(user_id):
-            await message.answer("🔒 Доступ закрыт.\nНажмите 🎁 Бесплатно 2 часа")
+        if user["trial_used"]:
+            await callback.message.answer("Вы уже использовали пробный доступ.")
             return
 
-        await message.answer("🔎 Ищу объявления...")
-        await send_results(user_id, "https://krisha.kz/arenda/")
-        return
+        expire = datetime.utcnow() + timedelta(hours=2)
 
-    # 🏡 Продажа
-    if message.text == "🏡 Продажа":
+        await conn.execute("""
+            UPDATE users
+            SET subscription_until=$1,
+                trial_used=TRUE,
+                tariff='standard'
+            WHERE user_id=$2
+        """, expire, callback.from_user.id)
 
-        if not await has_access(user_id):
-            await message.answer("🔒 Доступ закрыт.\nНажмите 🎁 Бесплатно 2 часа")
+    await callback.message.answer("Пробный доступ активирован на 2 часа.")
+
+# ---------------- SEARCH ----------------
+
+@dp.callback_query(lambda c: c.data == "search")
+async def search(callback: types.CallbackQuery):
+    async with DB.pool.acquire() as conn:
+        user = await conn.fetchrow(
+            "SELECT subscription_until FROM users WHERE user_id=$1",
+            callback.from_user.id
+        )
+
+        if not user["subscription_until"] or user["subscription_until"] < datetime.utcnow():
+            await callback.message.answer("Подписка не активна.")
             return
 
-        await message.answer("🔎 Ищу объявления...")
-        await send_results(user_id, "https://krisha.kz/prodazha/")
-        return
+    await callback.message.answer("Поиск объявлений по Алматы...")
 
-# ================= ПОДТВЕРЖДЕНИЕ ОПЛАТЫ =================
+# ---------------- PARSER WORKER ----------------
 
-@dp.callback_query(lambda c: c.data.startswith("approve_"))
-async def approve(callback: types.CallbackQuery):
+async def parser_worker():
+    while True:
+        async with DB.pool.acquire() as conn:
+            users = await conn.fetch(
+                "SELECT user_id FROM users WHERE subscription_until > NOW()"
+            )
 
-    if callback.from_user.id != ADMIN_ID:
-        return
+        for user in users:
+            await bot.send_message(
+                user["user_id"],
+                "🏠 Новое объявление в Алматы\nЦена: 300 000₸"
+            )
 
-    user_id = int(callback.data.split("_")[1])
-    expire = datetime.now() + timedelta(days=30)
+        await asyncio.sleep(30)
 
-    cursor.execute(
-        "UPDATE users SET pro_until=? WHERE user_id=?",
-        (expire.isoformat(), user_id)
-    )
-    db.commit()
+# ---------------- STARTUP ----------------
 
-    await bot.send_message(
-        user_id,
-        f"✅ Подписка до {expire.strftime('%d.%m.%Y')}"
-    )
-
-    await callback.message.edit_text("✅ Подписка выдана")
-
-# ================= ЗАПУСК =================
+@app.on_event("startup")
+async def startup():
+    await DB.connect()
+    await DB.create_tables()
+    asyncio.create_task(parser_worker())
 
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    uvicorn.run(app, host="0.0.0.0", port=8000)
