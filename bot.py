@@ -7,7 +7,11 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
+# ================== TOKEN ==================
 TOKEN = os.getenv("TOKEN")
+
+if not TOKEN:
+    raise ValueError("TOKEN не найден! Добавьте TOKEN в Railway → Variables")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -83,38 +87,29 @@ def build_url(mode, rooms, district_slug):
         base = f"https://krisha.kz/arenda/kvartiry/almaty-{district_slug}/"
     else:
         base = f"https://krisha.kz/prodazha/kvartiry/almaty-{district_slug}/"
-
     return f"{base}?das[live.rooms]={rooms}&das[who]=1"
 
 # ================== ПАРСЕР ==================
-async def parse(url, district_slug):
-    headers = {"User-Agent": "Mozilla/5.0"}
+async def parse(url):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+        "Accept-Language": "ru-RU,ru;q=0.9"
+    }
 
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.get(url) as response:
             html = await response.text()
+            print("HTML length:", len(html))
 
     soup = BeautifulSoup(html, "lxml")
     cards = soup.select("div.a-card")
 
     results = []
-
     for card in cards:
         title_tag = card.select_one("a.a-card__title")
         price_tag = card.select_one("div.a-card__price")
-        address_tag = card.select_one("div.a-card__subtitle")
 
-        if not title_tag or not price_tag or not address_tag:
-            continue
-
-        address_text = address_tag.text.lower()
-
-        # 🔥 Только Алматы
-        if "алматы" not in address_text:
-            continue
-
-        # 🔥 Только выбранный район
-        if district_slug not in address_text:
+        if not title_tag or not price_tag:
             continue
 
         title = title_tag.text.strip()
@@ -150,10 +145,6 @@ async def handler(message: types.Message):
         await message.answer("❌ Авто-поиск остановлен.")
         return
 
-    if message.text == "⬅ Назад":
-        await message.answer("Выберите количество комнат:", reply_markup=main_keyboard)
-        return
-
     if message.text == "🏠 Аренда":
         cursor.execute("UPDATE users SET mode='rent' WHERE user_id=?", (user_id,))
         db.commit()
@@ -166,20 +157,17 @@ async def handler(message: types.Message):
         await message.answer("Выберите количество комнат:")
         return
 
-    room_value = None
-    if message.text == "1️⃣ 1":
-        room_value = "1"
-    elif message.text == "2️⃣ 2":
-        room_value = "2"
-    elif message.text == "3️⃣ 3":
-        room_value = "3"
-    elif message.text == "4️⃣ 4":
-        room_value = "4"
-    elif message.text == "5️⃣ 5+":
-        room_value = "5"
+    room_map = {
+        "1️⃣ 1": "1",
+        "2️⃣ 2": "2",
+        "3️⃣ 3": "3",
+        "4️⃣ 4": "4",
+        "5️⃣ 5+": "5"
+    }
 
-    if room_value:
-        cursor.execute("UPDATE users SET rooms=? WHERE user_id=?", (room_value, user_id))
+    if message.text in room_map:
+        cursor.execute("UPDATE users SET rooms=? WHERE user_id=?",
+                       (room_map[message.text], user_id))
         db.commit()
         await message.answer("Выберите район:", reply_markup=district_keyboard)
         return
@@ -198,12 +186,12 @@ async def handler(message: types.Message):
         url = build_url(mode, rooms, slug)
 
         await message.answer("🔎 Отправляю первую страницу...\n")
-        await send_results(user_id, url, slug)
+        await send_results(user_id, url)
         return
 
 # ================== ОТПРАВКА ==================
-async def send_results(user_id, url, district_slug):
-    results = await parse(url, district_slug)
+async def send_results(user_id, url):
+    results = await parse(url)
 
     for title, price, link in results:
         cursor.execute(
@@ -236,7 +224,7 @@ async def monitor():
 
             for user_id, mode, rooms, district in users:
                 url = build_url(mode, rooms, district)
-                await send_results(user_id, url, district)
+                await send_results(user_id, url)
 
             await asyncio.sleep(120)
 
@@ -246,11 +234,7 @@ async def monitor():
 
 # ================== ЗАПУСК ==================
 async def main():
-    if not TOKEN:
-        raise ValueError("TOKEN не найден! Добавьте TOKEN в Railway → Variables")
-
     print("Бот запускается...")
-
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(monitor())
     await dp.start_polling(bot)
