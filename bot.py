@@ -246,9 +246,15 @@ async def monitor():
 
 # ================== ЗАПУСК ==================
 async def main():
+    if not TOKEN:
+        raise ValueError("TOKEN не найден! Добавьте TOKEN в Railway → Variables")
+
+    print("Бот запускается...")
+
     await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(monitor())
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
