@@ -121,36 +121,52 @@ async def handler(message: types.Message):
     user_id = message.from_user.id
     text = message.text
 
-    # НАЗАД
+    # ===== НАЗАД =====
     if text == "⬅ Назад":
-        cursor.execute("SELECT mode, rooms FROM users WHERE user_id=?", (user_id,))
+        cursor.execute("SELECT mode, rooms, district FROM users WHERE user_id=?", (user_id,))
         data = cursor.fetchone()
 
-        if not data or not data[0]:
+        if not data:
             await message.answer("Выберите режим:", reply_markup=mode_kb)
-        elif not data[1]:
-            await message.answer("Выберите режим:", reply_markup=mode_kb)
-        else:
+            return
+
+        mode, rooms, district = data
+
+        # Если был выбран район — возвращаем к комнатам
+        if district:
+            cursor.execute("UPDATE users SET district=NULL WHERE user_id=?", (user_id,))
+            db.commit()
             await message.answer("Выберите количество комнат:", reply_markup=rooms_kb)
+            return
+
+        # Если были выбраны комнаты — возвращаем к режиму
+        if rooms:
+            cursor.execute("UPDATE users SET rooms=NULL WHERE user_id=?", (user_id,))
+            db.commit()
+            await message.answer("Выберите режим:", reply_markup=mode_kb)
+            return
+
+        await message.answer("Выберите режим:", reply_markup=mode_kb)
         return
 
-    # СТОП
+    # ===== СТОП =====
     if text == "⛔ Стоп":
         cursor.execute("UPDATE users SET active=0 WHERE user_id=?", (user_id,))
         db.commit()
         await message.answer("❌ Автопоиск остановлен.")
         return
 
-    # РЕЖИМ
+    # ===== РЕЖИМ =====
     if text in ["🏠 Аренда", "🏡 Продажа"]:
         mode = "rent" if text == "🏠 Аренда" else "sale"
         cursor.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (user_id,))
         cursor.execute("UPDATE users SET mode=?, active=1 WHERE user_id=?", (mode, user_id))
+        cursor.execute("UPDATE users SET rooms=NULL, district=NULL WHERE user_id=?", (user_id,))
         db.commit()
         await message.answer("Выберите количество комнат:", reply_markup=rooms_kb)
         return
 
-    # КОМНАТЫ
+    # ===== КОМНАТЫ =====
     room_map = {
         "1️⃣ 1": "1",
         "2️⃣ 2": "2",
@@ -162,11 +178,12 @@ async def handler(message: types.Message):
     if text in room_map:
         cursor.execute("UPDATE users SET rooms=? WHERE user_id=?",
                        (room_map[text], user_id))
+        cursor.execute("UPDATE users SET district=NULL WHERE user_id=?", (user_id,))
         db.commit()
         await message.answer("Выберите район:", reply_markup=district_kb)
         return
 
-    # РАЙОН
+    # ===== РАЙОН =====
     if text in district_map:
         district = district_map[text]
 
