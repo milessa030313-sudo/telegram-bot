@@ -13,7 +13,6 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # ================== БАЗА ==================
-
 db = sqlite3.connect("database.db")
 cursor = db.cursor()
 
@@ -29,14 +28,15 @@ CREATE TABLE IF NOT EXISTS users(
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS sent_links(
-    link TEXT PRIMARY KEY
+    user_id INTEGER,
+    link TEXT,
+    PRIMARY KEY(user_id, link)
 )
 """)
 
 db.commit()
 
 # ================== КНОПКИ ==================
-
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🏠 Аренда"), KeyboardButton(text="🏡 Продажа")],
@@ -66,7 +66,6 @@ district_keyboard = ReplyKeyboardMarkup(
 )
 
 # ================== SLUG РАЙОНОВ ==================
-
 district_map = {
     "Алмалинский": "almaly",
     "Ауэзовский": "auezovskij",
@@ -79,9 +78,7 @@ district_map = {
 }
 
 # ================== URL ==================
-
 def build_url(mode, rooms, district_slug):
-
     if mode == "rent":
         base = f"https://krisha.kz/arenda/kvartiry/almaty-{district_slug}/"
     else:
@@ -90,8 +87,7 @@ def build_url(mode, rooms, district_slug):
     return f"{base}?das[live.rooms]={rooms}&das[who]=1"
 
 # ================== ПАРСЕР ==================
-
-async def parse(url):
+async def parse(url, district_slug):
     headers = {"User-Agent": "Mozilla/5.0"}
 
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -106,8 +102,19 @@ async def parse(url):
     for card in cards:
         title_tag = card.select_one("a.a-card__title")
         price_tag = card.select_one("div.a-card__price")
+        address_tag = card.select_one("div.a-card__subtitle")
 
-        if not title_tag or not price_tag:
+        if not title_tag or not price_tag or not address_tag:
+            continue
+
+        address_text = address_tag.text.lower()
+
+        # 🔥 Только Алматы
+        if "алматы" not in address_text:
+            continue
+
+        # 🔥 Только выбранный район
+        if district_slug not in address_text:
             continue
 
         title = title_tag.text.strip()
@@ -119,7 +126,6 @@ async def parse(url):
     return results
 
 # ================== СТАРТ ==================
-
 @dp.message(Command("start"))
 async def start(message: types.Message):
     cursor.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (message.from_user.id,))
@@ -134,7 +140,6 @@ async def start(message: types.Message):
     )
 
 # ================== ОБРАБОТКА ==================
-
 @dp.message()
 async def handler(message: types.Message):
     user_id = message.from_user.id
@@ -162,7 +167,6 @@ async def handler(message: types.Message):
         return
 
     room_value = None
-
     if message.text == "1️⃣ 1":
         room_value = "1"
     elif message.text == "2️⃣ 2":
@@ -177,17 +181,13 @@ async def handler(message: types.Message):
     if room_value:
         cursor.execute("UPDATE users SET rooms=? WHERE user_id=?", (room_value, user_id))
         db.commit()
-
         await message.answer("Выберите район:", reply_markup=district_keyboard)
         return
 
     if message.text in district_map:
-
         slug = district_map[message.text]
 
-        cursor.execute("DELETE FROM sent_links")
-        db.commit()
-
+        cursor.execute("DELETE FROM sent_links WHERE user_id=?", (user_id,))
         cursor.execute("UPDATE users SET district=?, active=1 WHERE user_id=?",
                        (slug, user_id))
         db.commit()
@@ -198,42 +198,45 @@ async def handler(message: types.Message):
         url = build_url(mode, rooms, slug)
 
         await message.answer("🔎 Отправляю первую страницу...\n")
-
-        await send_results(user_id, url)
+        await send_results(user_id, url, slug)
         return
 
 # ================== ОТПРАВКА ==================
-
-async def send_results(user_id, url):
-
-    results = await parse(url)
+async def send_results(user_id, url, district_slug):
+    results = await parse(url, district_slug)
 
     for title, price, link in results:
+        cursor.execute(
+            "SELECT link FROM sent_links WHERE link=? AND user_id=?",
+            (link, user_id)
+        )
 
-        cursor.execute("SELECT link FROM sent_links WHERE link=?", (link,))
         if cursor.fetchone():
             continue
 
-        cursor.execute("INSERT INTO sent_links(link) VALUES(?)", (link,))
+        cursor.execute(
+            "INSERT INTO sent_links(user_id, link) VALUES(?, ?)",
+            (user_id, link)
+        )
         db.commit()
 
         text = f"🏠 {title}\n💰 {price}\n🔗 {link}"
-
         await bot.send_message(user_id, text)
 
 # ================== МОНИТОР ==================
-
 async def monitor():
     await asyncio.sleep(10)
 
     while True:
         try:
-            cursor.execute("SELECT user_id, mode, rooms, district FROM users WHERE active=1")
+            cursor.execute(
+                "SELECT user_id, mode, rooms, district FROM users WHERE active=1"
+            )
             users = cursor.fetchall()
 
             for user_id, mode, rooms, district in users:
                 url = build_url(mode, rooms, district)
-                await send_results(user_id, url)
+                await send_results(user_id, url, district)
 
             await asyncio.sleep(120)
 
@@ -242,7 +245,6 @@ async def monitor():
             await asyncio.sleep(60)
 
 # ================== ЗАПУСК ==================
-
 async def main():
     asyncio.create_task(monitor())
     await dp.start_polling(bot)
