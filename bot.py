@@ -7,12 +7,7 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-# ================== TOKEN ==================
 TOKEN = os.getenv("TOKEN")
-
-if not TOKEN:
-    raise ValueError("TOKEN не найден! Добавьте TOKEN в Railway → Variables")
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -26,7 +21,7 @@ CREATE TABLE IF NOT EXISTS users(
     active INTEGER DEFAULT 1,
     mode TEXT DEFAULT 'rent',
     rooms TEXT DEFAULT '1',
-    district TEXT DEFAULT 'bostandykskij'
+    district TEXT DEFAULT 'almaly'
 )
 """)
 
@@ -44,27 +39,13 @@ db.commit()
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🏠 Аренда"), KeyboardButton(text="🏡 Продажа")],
-        [
-            KeyboardButton(text="1️⃣ 1"),
-            KeyboardButton(text="2️⃣ 2"),
-            KeyboardButton(text="3️⃣ 3")
-        ],
-        [
-            KeyboardButton(text="4️⃣ 4"),
-            KeyboardButton(text="5️⃣ 5+")
-        ],
+        [KeyboardButton(text="1️⃣ 1"), KeyboardButton(text="2️⃣ 2"), KeyboardButton(text="3️⃣ 3")],
+        [KeyboardButton(text="4️⃣ 4"), KeyboardButton(text="5️⃣ 5+")],
+        [KeyboardButton(text="Алмалинский"), KeyboardButton(text="Ауэзовский")],
+        [KeyboardButton(text="Бостандыкский"), KeyboardButton(text="Медеуский")],
+        [KeyboardButton(text="Жетысуский"), KeyboardButton(text="Турксибский")],
+        [KeyboardButton(text="Алатауский"), KeyboardButton(text="Наурызбайский")],
         [KeyboardButton(text="⛔ Стоп")]
-    ],
-    resize_keyboard=True
-)
-
-district_keyboard = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="Алатауский"), KeyboardButton(text="Алмалинский")],
-        [KeyboardButton(text="Ауэзовский"), KeyboardButton(text="Бостандыкский")],
-        [KeyboardButton(text="Жетысуский"), KeyboardButton(text="Медеуский")],
-        [KeyboardButton(text="Наурызбайский"), KeyboardButton(text="Турксибский")],
-        [KeyboardButton(text="⬅ Назад")]
     ],
     resize_keyboard=True
 )
@@ -82,29 +63,29 @@ district_map = {
 }
 
 # ================== URL ==================
-def build_url(mode, rooms, district_slug):
+def build_url(mode, rooms, district):
     if mode == "rent":
-        base = f"https://krisha.kz/arenda/kvartiry/almaty-{district_slug}/"
+        base = f"https://krisha.kz/arenda/kvartiry/almaty-{district}/?das[who]=1"
     else:
-        base = f"https://krisha.kz/prodazha/kvartiry/almaty-{district_slug}/"
-    return f"{base}?das[live.rooms]={rooms}&das[who]=1"
+        base = f"https://krisha.kz/prodazha/kvartiry/almaty-{district}/?das[who]=1"
+
+    return base + f"&das[live.rooms]={rooms}"
 
 # ================== ПАРСЕР ==================
 async def parse(url):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-        "Accept-Language": "ru-RU,ru;q=0.9"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
 
     async with aiohttp.ClientSession(headers=headers) as session:
         async with session.get(url) as response:
             html = await response.text()
-            print("HTML length:", len(html))
 
     soup = BeautifulSoup(html, "lxml")
     cards = soup.select("div.a-card")
 
     results = []
+
     for card in cards:
         title_tag = card.select_one("a.a-card__title")
         price_tag = card.select_one("div.a-card__price")
@@ -128,9 +109,9 @@ async def start(message: types.Message):
     db.commit()
 
     await message.answer(
-        "🏠 Недвижимость Алматы\n"
-        "Аренда / Продажа → Комнаты → Район\n"
-        "Мониторинг каждые 2 минуты",
+        "🏠 Бот недвижимости Алматы\n"
+        "Выберите режим → комнаты → район\n"
+        "После этого первая страница и автопоиск",
         reply_markup=main_keyboard
     )
 
@@ -146,13 +127,13 @@ async def handler(message: types.Message):
         return
 
     if message.text == "🏠 Аренда":
-        cursor.execute("UPDATE users SET mode='rent' WHERE user_id=?", (user_id,))
+        cursor.execute("UPDATE users SET mode='rent', active=1 WHERE user_id=?", (user_id,))
         db.commit()
         await message.answer("Выберите количество комнат:")
         return
 
     if message.text == "🏡 Продажа":
-        cursor.execute("UPDATE users SET mode='sale' WHERE user_id=?", (user_id,))
+        cursor.execute("UPDATE users SET mode='sale', active=1 WHERE user_id=?", (user_id,))
         db.commit()
         await message.answer("Выберите количество комнат:")
         return
@@ -166,10 +147,10 @@ async def handler(message: types.Message):
     }
 
     if message.text in room_map:
-        cursor.execute("UPDATE users SET rooms=? WHERE user_id=?",
+        cursor.execute("UPDATE users SET rooms=?, active=1 WHERE user_id=?",
                        (room_map[message.text], user_id))
         db.commit()
-        await message.answer("Выберите район:", reply_markup=district_keyboard)
+        await message.answer("Теперь выберите район:")
         return
 
     if message.text in district_map:
@@ -192,6 +173,10 @@ async def handler(message: types.Message):
 # ================== ОТПРАВКА ==================
 async def send_results(user_id, url):
     results = await parse(url)
+
+    if not results:
+        await bot.send_message(user_id, "❌ Объявления не найдены.")
+        return
 
     for title, price, link in results:
         cursor.execute(
@@ -217,9 +202,7 @@ async def monitor():
 
     while True:
         try:
-            cursor.execute(
-                "SELECT user_id, mode, rooms, district FROM users WHERE active=1"
-            )
+            cursor.execute("SELECT user_id, mode, rooms, district FROM users WHERE active=1")
             users = cursor.fetchall()
 
             for user_id, mode, rooms, district in users:
@@ -234,11 +217,8 @@ async def monitor():
 
 # ================== ЗАПУСК ==================
 async def main():
-    print("Бот запускается...")
-    await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(monitor())
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
