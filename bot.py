@@ -64,7 +64,7 @@ district_map = {
     "Алмалинский": "almalinskij",
     "Ауэзовский": "aujezovskij",
     "Бостандыкский": "bostandykskij",
-    "Жетысуский": "almaty-zhetysuskij",
+    "Жетысуский": "zhetysuskij",
     "Медеуский": "medeuskij",
     "Наурызбайский": "nauryzbajskiy",
     "Турксибский": "turksibskij",
