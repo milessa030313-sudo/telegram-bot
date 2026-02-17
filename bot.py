@@ -56,20 +56,16 @@ main_keyboard = ReplyKeyboardMarkup(
 
 district_keyboard = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="Алатауский")],
-        [KeyboardButton(text="Алмалинский")],
-        [KeyboardButton(text="Ауэзовский")],
-        [KeyboardButton(text="Бостандыкский")],
-        [KeyboardButton(text="Жетысуский")],
-        [KeyboardButton(text="Медеуский")],
-        [KeyboardButton(text="Наурызбайский")],
-        [KeyboardButton(text="Турксибский")],
+        [KeyboardButton(text="Алатауский"), KeyboardButton(text="Алмалинский")],
+        [KeyboardButton(text="Ауэзовский"), KeyboardButton(text="Бостандыкский")],
+        [KeyboardButton(text="Жетысуский"), KeyboardButton(text="Медеуский")],
+        [KeyboardButton(text="Наурызбайский"), KeyboardButton(text="Турксибский")],
         [KeyboardButton(text="⬅ Назад")]
     ],
     resize_keyboard=True
 )
 
-# ================== РАЙОНЫ (точные ID Krisha) ==================
+# ================== РАЙОНЫ ==================
 
 district_map = {
     "Алмалинский": "1",
@@ -91,7 +87,8 @@ def build_url(mode, rooms, district):
     else:
         base = "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
 
-    return base + f"&das[live.rooms]={rooms}&das[map.district]={district}"
+    # ВАЖНО: правильный параметр района
+    return f"{base}&das[live.rooms]={rooms}&das[map.district]={district}"
 
 # ================== ПАРСЕР ==================
 
@@ -132,10 +129,10 @@ async def start(message: types.Message):
 
     await message.answer(
         "🏠 Бот недвижимости Алматы\n"
-        "Только от хозяев\n"
-        "Сначала выберите режим и комнаты\n"
-        "Затем район\n"
-        "Далее обновление каждые 2 минуты",
+        "1️⃣ Выберите аренду или продажу\n"
+        "2️⃣ Выберите комнаты\n"
+        "3️⃣ Выберите район\n"
+        "Далее автообновление каждые 2 минуты",
         reply_markup=main_keyboard
     )
 
@@ -159,13 +156,13 @@ async def handler(message: types.Message):
 
     # РЕЖИМ
     if message.text == "🏠 Аренда":
-        cursor.execute("UPDATE users SET mode='rent', active=1 WHERE user_id=?", (user_id,))
+        cursor.execute("UPDATE users SET mode='rent' WHERE user_id=?", (user_id,))
         db.commit()
         await message.answer("Выберите количество комнат:")
         return
 
     if message.text == "🏡 Продажа":
-        cursor.execute("UPDATE users SET mode='sale', active=1 WHERE user_id=?", (user_id,))
+        cursor.execute("UPDATE users SET mode='sale' WHERE user_id=?", (user_id,))
         db.commit()
         await message.answer("Выберите количество комнат:")
         return
@@ -196,13 +193,12 @@ async def handler(message: types.Message):
 
         district_value = district_map[message.text]
 
+        # очищаем старые ссылки при смене фильтра
         cursor.execute("DELETE FROM sent_links")
         db.commit()
 
-        cursor.execute(
-            "UPDATE users SET district=?, active=1 WHERE user_id=?",
-            (district_value, user_id)
-        )
+        cursor.execute("UPDATE users SET district=?, active=1 WHERE user_id=?",
+                       (district_value, user_id))
         db.commit()
 
         cursor.execute("SELECT mode, rooms FROM users WHERE user_id=?", (user_id,))
@@ -210,7 +206,7 @@ async def handler(message: types.Message):
 
         url = build_url(mode, rooms, district_value)
 
-        await message.answer("🔎 Ищем объявления...\n")
+        await message.answer("🔎 Отправляю объявления...\n")
 
         await send_results(user_id, url)
         return
@@ -234,11 +230,7 @@ async def send_results(user_id, url):
         cursor.execute("INSERT INTO sent_links(link) VALUES(?)", (link,))
         db.commit()
 
-        text = f"""
-🏠 {title}
-💰 {price}
-🔗 {link}
-"""
+        text = f"🏠 {title}\n💰 {price}\n🔗 {link}"
 
         await bot.send_message(user_id, text)
 
