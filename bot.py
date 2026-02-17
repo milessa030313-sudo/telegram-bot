@@ -246,7 +246,6 @@ async def monitor():
 
 # ================== ЗАПУСК ==================
 async def main():
-    await bot.delete_webhook(drop_pending_updates=True)
     asyncio.create_task(monitor())
     await dp.start_polling(bot)
 
