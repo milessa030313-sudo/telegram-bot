@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS users(
     active INTEGER DEFAULT 1,
     mode TEXT DEFAULT 'rent',
     rooms TEXT DEFAULT '1',
-    district TEXT DEFAULT '1'
+    district TEXT DEFAULT 'bostandykskij'
 )
 """)
 
@@ -65,30 +65,29 @@ district_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ================== РАЙОНЫ ==================
+# ================== SLUG РАЙОНОВ ==================
 
 district_map = {
-    "Алмалинский": "1",
-    "Ауэзовский": "2",
-    "Бостандыкский": "3",
-    "Жетысуский": "4",
-    "Медеуский": "5",
-    "Наурызбайский": "6",
-    "Турксибский": "7",
-    "Алатауский": "8"
+    "Алмалинский": "almaly",
+    "Ауэзовский": "auezovskij",
+    "Бостандыкский": "bostandykskij",
+    "Жетысуский": "zhetysusky",
+    "Медеуский": "medeuskij",
+    "Наурызбайский": "nauryzbajskij",
+    "Турксибский": "turksibskij",
+    "Алатауский": "alatauskij"
 }
 
 # ================== URL ==================
 
-def build_url(mode, rooms, district):
+def build_url(mode, rooms, district_slug):
 
     if mode == "rent":
-        base = "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
+        base = f"https://krisha.kz/arenda/kvartiry/almaty-{district_slug}/"
     else:
-        base = "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
+        base = f"https://krisha.kz/prodazha/kvartiry/almaty-{district_slug}/"
 
-    # ВАЖНО: правильный параметр района
-    return f"{base}&das[live.rooms]={rooms}&das[map.district]={district}"
+    return f"{base}?das[live.rooms]={rooms}&das[who]=1"
 
 # ================== ПАРСЕР ==================
 
@@ -128,11 +127,9 @@ async def start(message: types.Message):
     db.commit()
 
     await message.answer(
-        "🏠 Бот недвижимости Алматы\n"
-        "1️⃣ Выберите аренду или продажу\n"
-        "2️⃣ Выберите комнаты\n"
-        "3️⃣ Выберите район\n"
-        "Далее автообновление каждые 2 минуты",
+        "🏠 Недвижимость Алматы\n"
+        "Аренда / Продажа → Комнаты → Район\n"
+        "Мониторинг каждые 2 минуты",
         reply_markup=main_keyboard
     )
 
@@ -142,19 +139,16 @@ async def start(message: types.Message):
 async def handler(message: types.Message):
     user_id = message.from_user.id
 
-    # СТОП
     if message.text == "⛔ Стоп":
         cursor.execute("UPDATE users SET active=0 WHERE user_id=?", (user_id,))
         db.commit()
         await message.answer("❌ Авто-поиск остановлен.")
         return
 
-    # НАЗАД
     if message.text == "⬅ Назад":
         await message.answer("Выберите количество комнат:", reply_markup=main_keyboard)
         return
 
-    # РЕЖИМ
     if message.text == "🏠 Аренда":
         cursor.execute("UPDATE users SET mode='rent' WHERE user_id=?", (user_id,))
         db.commit()
@@ -167,7 +161,6 @@ async def handler(message: types.Message):
         await message.answer("Выберите количество комнат:")
         return
 
-    # КОМНАТЫ
     room_value = None
 
     if message.text == "1️⃣ 1":
@@ -188,25 +181,23 @@ async def handler(message: types.Message):
         await message.answer("Выберите район:", reply_markup=district_keyboard)
         return
 
-    # РАЙОН
     if message.text in district_map:
 
-        district_value = district_map[message.text]
+        slug = district_map[message.text]
 
-        # очищаем старые ссылки при смене фильтра
         cursor.execute("DELETE FROM sent_links")
         db.commit()
 
         cursor.execute("UPDATE users SET district=?, active=1 WHERE user_id=?",
-                       (district_value, user_id))
+                       (slug, user_id))
         db.commit()
 
         cursor.execute("SELECT mode, rooms FROM users WHERE user_id=?", (user_id,))
         mode, rooms = cursor.fetchone()
 
-        url = build_url(mode, rooms, district_value)
+        url = build_url(mode, rooms, slug)
 
-        await message.answer("🔎 Отправляю объявления...\n")
+        await message.answer("🔎 Отправляю первую страницу...\n")
 
         await send_results(user_id, url)
         return
@@ -216,10 +207,6 @@ async def handler(message: types.Message):
 async def send_results(user_id, url):
 
     results = await parse(url)
-
-    if not results:
-        await bot.send_message(user_id, "❌ Объявления не найдены.")
-        return
 
     for title, price, link in results:
 
