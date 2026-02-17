@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS users(
     user_id INTEGER PRIMARY KEY,
     active INTEGER DEFAULT 1,
     mode TEXT DEFAULT 'rent',
-    rooms TEXT DEFAULT '1'
+    rooms TEXT DEFAULT '1',
+    district TEXT DEFAULT '1'
 )
 """)
 
@@ -52,9 +53,37 @@ main_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+district_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Алатауский")],
+        [KeyboardButton(text="Алмалинский")],
+        [KeyboardButton(text="Ауэзовский")],
+        [KeyboardButton(text="Бостандыкский")],
+        [KeyboardButton(text="Жетысуский")],
+        [KeyboardButton(text="Медеуский")],
+        [KeyboardButton(text="Наурызбайский")],
+        [KeyboardButton(text="Турксибский")],
+        [KeyboardButton(text="⬅ Назад")]
+    ],
+    resize_keyboard=True
+)
+
+# ================== РАЙОНЫ ==================
+
+district_map = {
+    "Алмалинский": "1",
+    "Ауэзовский": "2",
+    "Бостандыкский": "3",
+    "Жетысуский": "4",
+    "Медеуский": "5",
+    "Наурызбайский": "6",
+    "Турксибский": "7",
+    "Алатауский": "8"
+}
+
 # ================== URL ==================
 
-def build_url(mode, rooms):
+def build_url(mode, rooms, district):
 
     if mode == "rent":
         base = "https://krisha.kz/arenda/kvartiry/almaty/?das[who]=1"
@@ -62,9 +91,9 @@ def build_url(mode, rooms):
         base = "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
 
     if rooms == "5":
-        return base + "&das[live.rooms]=5"
+        return base + f"&das[live.rooms]=5&das[region]={district}"
     else:
-        return base + f"&das[live.rooms]={rooms}"
+        return base + f"&das[live.rooms]={rooms}&das[region]={district}"
 
 # ================== ПАРСЕР ==================
 
@@ -124,6 +153,11 @@ async def handler(message: types.Message):
         await message.answer("❌ Авто-поиск остановлен.")
         return
 
+    # НАЗАД
+    if message.text == "⬅ Назад":
+        await message.answer("Выберите количество комнат:", reply_markup=main_keyboard)
+        return
+
     # РЕЖИМ
     if message.text == "🏠 Аренда":
         cursor.execute("UPDATE users SET mode='rent', active=1 WHERE user_id=?", (user_id,))
@@ -152,23 +186,34 @@ async def handler(message: types.Message):
         room_value = "5"
 
     if room_value:
-        # очистка старых ссылок при смене фильтра
+        cursor.execute("UPDATE users SET rooms=? WHERE user_id=?", (room_value, user_id))
+        db.commit()
+
+        await message.answer("Выберите район:", reply_markup=district_keyboard)
+        return
+
+    # РАЙОН
+    if message.text in district_map:
+
+        district_value = district_map[message.text]
+
         cursor.execute("DELETE FROM sent_links")
         db.commit()
 
-        cursor.execute("UPDATE users SET rooms=?, active=1 WHERE user_id=?", (room_value, user_id))
+        cursor.execute(
+            "UPDATE users SET district=?, active=1 WHERE user_id=?",
+            (district_value, user_id)
+        )
         db.commit()
 
-        cursor.execute("SELECT mode FROM users WHERE user_id=?", (user_id,))
-        mode = cursor.fetchone()[0]
+        cursor.execute("SELECT mode, rooms FROM users WHERE user_id=?", (user_id,))
+        mode, rooms = cursor.fetchone()
 
-        url = build_url(mode, room_value)
+        url = build_url(mode, rooms, district_value)
 
         await message.answer("🔎 Ищем объявления...\n")
 
-        # сразу отправляем первую страницу
         await send_results(user_id, url)
-
         return
 
 # ================== ОТПРАВКА ==================
@@ -205,11 +250,11 @@ async def monitor():
 
     while True:
         try:
-            cursor.execute("SELECT user_id, mode, rooms FROM users WHERE active=1")
+            cursor.execute("SELECT user_id, mode, rooms, district FROM users WHERE active=1")
             users = cursor.fetchall()
 
-            for user_id, mode, rooms in users:
-                url = build_url(mode, rooms)
+            for user_id, mode, rooms, district in users:
+                url = build_url(mode, rooms, district)
                 await send_results(user_id, url)
 
             await asyncio.sleep(120)
