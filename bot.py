@@ -13,6 +13,7 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # ================== БАЗА ==================
+
 db = sqlite3.connect("database.db")
 cursor = db.cursor()
 
@@ -68,7 +69,7 @@ district_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# ================== РАЙОНЫ ==================
+# ================== РАЙОНЫ (точные ID Krisha) ==================
 
 district_map = {
     "Алмалинский": "1",
@@ -90,10 +91,7 @@ def build_url(mode, rooms, district):
     else:
         base = "https://krisha.kz/prodazha/kvartiry/almaty/?das[who]=1"
 
-    if rooms == "5":
-        return base + f"&das[live.rooms]=5&das[region]={district}"
-    else:
-        return base + f"&das[live.rooms]={rooms}&das[region]={district}"
+    return base + f"&das[live.rooms]={rooms}&das[map.district]={district}"
 
 # ================== ПАРСЕР ==================
 
@@ -135,8 +133,9 @@ async def start(message: types.Message):
     await message.answer(
         "🏠 Бот недвижимости Алматы\n"
         "Только от хозяев\n"
-        "После выбора фильтра приходит вся первая страница\n"
-        "Далее проверка каждые 2 минуты",
+        "Сначала выберите режим и комнаты\n"
+        "Затем район\n"
+        "Далее обновление каждые 2 минуты",
         reply_markup=main_keyboard
     )
 
