@@ -61,7 +61,7 @@ district_kb = ReplyKeyboardMarkup(
 )
 
 district_map = {
-    "Алмалинский": "almaly",
+    "Алмалинский": "almalinskij",
     "Ауэзовский": "auezovskij",
     "Бостандыкский": "bostandykskij",
     "Жетысуский": "zhetysusky",
