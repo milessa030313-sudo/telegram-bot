@@ -1,7 +1,4 @@
 aiogram==3.4.1
 aiohttp
-asyncpg
-redis
 beautifulsoup4
-apscheduler
-python-dotenv
+lxml
