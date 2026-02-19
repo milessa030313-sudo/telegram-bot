@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 import aiohttp
@@ -14,6 +15,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
+# ================= CONFIG =================
+
 load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
@@ -21,8 +24,10 @@ ADMIN_ID = int(os.getenv("ADMIN_ID"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 REDIS_URL = os.getenv("REDIS_URL")
 
-if not TOKEN or not ADMIN_ID or not DATABASE_URL or not REDIS_URL:
-    raise ValueError("Не заполнены переменные окружения")
+if not TOKEN or not DATABASE_URL or not REDIS_URL:
+    raise ValueError("❌ Не заполнены переменные окружения")
+
+logging.basicConfig(level=logging.INFO)
 
 bot = Bot(TOKEN)
 dp = Dispatcher()
@@ -30,19 +35,10 @@ dp = Dispatcher()
 BASE_URL = "https://krisha.kz"
 PARSER_INTERVAL = 60
 
-DISTRICTS = {
-    "Алмалинский": "almalinskij",
-    "Бостандыкский": "bostandykskij",
-    "Ауэзовский": "aujezovskij",
-    "Медеуский": "medeuskij",
-}
-
-ROOMS = ["1", "2", "3", "4"]
-
+# ================= UTILS =================
 
 def utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
-
 
 # ================= DATABASE =================
 
@@ -52,13 +48,18 @@ async def init_db(pool):
         CREATE TABLE IF NOT EXISTS users(
             user_id BIGINT PRIMARY KEY,
             mode TEXT DEFAULT 'rent',
-            district TEXT,
-            rooms TEXT,
             tariff TEXT DEFAULT 'free',
             subscription_until TIMESTAMP
         );
         """)
 
+        await conn.execute("""
+        CREATE TABLE IF NOT EXISTS sent_ads(
+            user_id BIGINT,
+            ad_id TEXT,
+            PRIMARY KEY(user_id, ad_id)
+        );
+        """)
 
 # ================= PARSER =================
 
@@ -84,15 +85,14 @@ async def parse(mode="rent"):
 
             ads.append({
                 "id": ad_id,
-                "text": f"{title}\n{link}"
+                "text": f"🏠 {title}\n{link}"
             })
         except:
             continue
 
     return ads
 
-
-# ================= AUTO PARSER =================
+# ================= JOBS =================
 
 async def parser_job():
     rent_ads = await parse("rent")
@@ -101,13 +101,10 @@ async def parser_job():
     await redis_client.set("rent_ads", json.dumps(rent_ads))
     await redis_client.set("sale_ads", json.dumps(sale_ads))
 
-
-# ================= AUTO SEND =================
-
 async def sender_job():
     async with pool.acquire() as conn:
         users = await conn.fetch("""
-        SELECT * FROM users
+        SELECT user_id, mode FROM users
         WHERE subscription_until > $1
         """, utcnow())
 
@@ -119,68 +116,23 @@ async def sender_job():
         ads = json.loads(ads_json)
 
         for ad in ads[:3]:
-            await bot.send_message(user["user_id"], ad["text"])
+            async with pool.acquire() as conn:
+                exists = await conn.fetchval("""
+                SELECT 1 FROM sent_ads
+                WHERE user_id=$1 AND ad_id=$2
+                """, user["user_id"], ad["id"])
+
+                if exists:
+                    continue
+
+                await bot.send_message(user["user_id"], ad["text"])
+
+                await conn.execute("""
+                INSERT INTO sent_ads(user_id, ad_id)
+                VALUES($1,$2)
+                """, user["user_id"], ad["id"])
+
             await asyncio.sleep(0.3)
-
-
-# ================= ADMIN PANEL =================
-
-@dp.message(Command("admin"))
-async def admin_panel(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-
-    kb = InlineKeyboardBuilder()
-    kb.add(InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats"))
-    kb.add(InlineKeyboardButton(text="📢 Рассылка", callback_data="admin_broadcast"))
-    kb.adjust(1)
-
-    await message.answer("Админ панель:", reply_markup=kb.as_markup())
-
-
-@dp.callback_query(F.data == "admin_stats")
-async def admin_stats(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        return
-
-    async with pool.acquire() as conn:
-        total = await conn.fetchval("SELECT COUNT(*) FROM users")
-        paid = await conn.fetchval("""
-            SELECT COUNT(*) FROM users
-            WHERE subscription_until > $1
-        """, utcnow())
-
-    await callback.message.edit_text(
-        f"👥 Всего пользователей: {total}\n💎 Активных подписок: {paid}"
-    )
-
-
-@dp.callback_query(F.data == "admin_broadcast")
-async def admin_broadcast(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        return
-
-    await callback.message.answer("Отправьте текст для рассылки:")
-    dp["broadcast"] = True
-
-
-@dp.message()
-async def handle_messages(message: Message):
-    if dp.get("broadcast") and message.from_user.id == ADMIN_ID:
-        dp["broadcast"] = False
-
-        async with pool.acquire() as conn:
-            users = await conn.fetch("SELECT user_id FROM users")
-
-        for user in users:
-            try:
-                await bot.send_message(user["user_id"], message.text)
-                await asyncio.sleep(0.1)
-            except:
-                continue
-
-        await message.answer("Рассылка завершена")
-
 
 # ================= USER FLOW =================
 
@@ -200,7 +152,6 @@ async def start(message: Message):
 
     await message.answer("Выберите режим:", reply_markup=kb.as_markup())
 
-
 @dp.callback_query(F.data.in_(["rent", "sale"]))
 async def set_mode(callback: CallbackQuery):
     async with pool.acquire() as conn:
@@ -208,8 +159,7 @@ async def set_mode(callback: CallbackQuery):
         UPDATE users SET mode=$1 WHERE user_id=$2
         """, callback.data, callback.from_user.id)
 
-    await callback.message.edit_text("Режим сохранён")
-
+    await callback.message.edit_text("✅ Режим сохранён")
 
 @dp.message(Command("buy"))
 async def buy(message: Message):
@@ -217,12 +167,32 @@ async def buy(message: Message):
 
     async with pool.acquire() as conn:
         await conn.execute("""
-        UPDATE users SET tariff='standard', subscription_until=$1
+        UPDATE users
+        SET tariff='standard', subscription_until=$1
         WHERE user_id=$2
         """, until, message.from_user.id)
 
     await message.answer("💎 Подписка активирована на 30 дней!")
 
+# ================= ADMIN =================
+
+@dp.message(Command("admin"))
+async def admin(message: Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("SELECT COUNT(*) FROM users")
+        active = await conn.fetchval("""
+        SELECT COUNT(*) FROM users
+        WHERE subscription_until > $1
+        """, utcnow())
+
+    await message.answer(
+        f"📊 Статистика\n\n"
+        f"Всего пользователей: {total}\n"
+        f"Активных подписок: {active}"
+    )
 
 # ================= MAIN =================
 
@@ -230,7 +200,7 @@ async def main():
     global pool, redis_client
 
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=5, max_size=20)
-    redis_client = redis.from_url(REDIS_URL)
+    redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 
     await init_db(pool)
 
@@ -240,7 +210,6 @@ async def main():
     scheduler.start()
 
     await dp.start_polling(bot)
-
 
 if __name__ == "__main__":
     asyncio.run(main())
