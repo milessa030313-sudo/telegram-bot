@@ -107,9 +107,10 @@ def has_access(user_id: int) -> tuple[bool, str]:
             left = int((trial_end - now) / 60)
             return True, ""  # доступ есть
         # Trial истёк
+        amount_str = f"{PAYMENT_AMOUNT:,}".replace(",", " ")
         return False, (
             f"⏳ Бесплатный период (10 мин) закончился.\n\n"
-            f"💳 Для продолжения оплатите подписку — {PAYMENT_AMOUNT:,} ₸ на 30 дней.\n".replace(",", " ")
+            f"💳 Для продолжения оплатите подписку — {amount_str} ₸ на 30 дней.\n"
             f"Нажмите «💳 Оплатить» для получения реквизитов."
         )
 
@@ -232,11 +233,12 @@ def pay_kb(request_id: int) -> InlineKeyboardMarkup:
 async def pay_info(message: types.Message):
     user_id = message.from_user.id
     access, msg = has_access(user_id)
+    amount_str = f"{PAYMENT_AMOUNT:,}".replace(",", " ")
 
     if access:
         await message.answer(
             f"✅ У вас есть активный доступ.\n\n"
-            f"Подписка: 30 дней — {PAYMENT_AMOUNT:,} ₸\n".replace(",", " ")
+            f"Подписка: 30 дней — {amount_str} ₸\n"
             f"Реквизиты для перевода:\n"
             f"💳 {PAYMENT_CARD}\n\n"
             f"После перевода нажмите «Оплатил» — администратор подтвердит платёж.",
@@ -246,7 +248,7 @@ async def pay_info(message: types.Message):
         )
     else:
         await message.answer(
-            f"💳 Подписка на 30 дней — {PAYMENT_AMOUNT:,} ₸\n\n".replace(",", " ")
+            f"💳 Подписка на 30 дней — {amount_str} ₸\n\n"
             f"Переведите на карту:\n"
             f"💳 {PAYMENT_CARD}\n\n"
             f"После перевода нажмите «Оплатил» — администратор подтвердит платёж вручную.",
@@ -275,13 +277,14 @@ async def pay_request(callback: types.CallbackQuery):
 
     # Уведомление админу
     if ADMIN_ID:
+        amount_str = f"{PAYMENT_AMOUNT:,}".replace(",", " ")
         await bot.send_message(
             ADMIN_ID,
             f"💳 Новая заявка на оплату #{request_id}\n\n"
             f"👤 User ID: {user_id}\n"
             f"📛 Имя: {name}\n"
             f"🔗 @{username}\n"
-            f"💰 Сумма: {PAYMENT_AMOUNT:,} ₸\n\n".replace(",", " ")
+            f"💰 Сумма: {amount_str} ₸\n\n"
             f"Подтвердите после получения перевода:",
             reply_markup=pay_kb(request_id)
         )
