@@ -1,18 +1,33 @@
 import asyncio
 import os
-import aiohttp
 import sqlite3
+import time
+from datetime import datetime
+
+import aiohttp
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 TOKEN = os.getenv("TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # ID админа для подтверждения платежей
+PAYMENT_CARD = os.getenv("PAYMENT_CARD", "0000 0000 0000 0000")  # Карта для перевода
+PAYMENT_AMOUNT = int(os.getenv("PAYMENT_AMOUNT", "2990"))  # Сумма подписки (₸)
+TRIAL_MINUTES = 10
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 # ================= БАЗА =================
-db = sqlite3.connect("database.db")
+# Railway: используйте Volume и путь /data для сохранения БД
+DB_PATH = os.getenv("DATABASE_PATH", "database.db")
+db = sqlite3.connect(DB_PATH)
 cursor = db.cursor()
 
 cursor.execute("""
@@ -21,7 +36,9 @@ CREATE TABLE IF NOT EXISTS users(
     active INTEGER DEFAULT 1,
     mode TEXT,
     rooms TEXT,
-    district TEXT
+    district TEXT,
+    trial_started_at REAL,
+    subscription_expires_at REAL
 )
 """)
 
@@ -33,13 +50,84 @@ CREATE TABLE IF NOT EXISTS sent_links(
 )
 """)
 
+# Миграция: добавить колонки подписок в users (если их нет)
+try:
+    cursor.execute("ALTER TABLE users ADD COLUMN trial_started_at REAL")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
+try:
+    cursor.execute("ALTER TABLE users ADD COLUMN subscription_expires_at REAL")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS payment_requests(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    status TEXT DEFAULT 'pending',
+    created_at REAL NOT NULL,
+    confirmed_at REAL,
+    confirmed_by INTEGER,
+    FOREIGN KEY(user_id) REFERENCES users(user_id)
+)
+""")
+
 db.commit()
+
+# ================= ПРОВЕРКА ДОСТУПА =================
+
+def has_access(user_id: int) -> tuple[bool, str]:
+    """
+    Проверяет доступ пользователя.
+    Возвращает (доступ_есть, сообщение_если_нет).
+    """
+    cursor.execute(
+        "SELECT trial_started_at, subscription_expires_at FROM users WHERE user_id=?",
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    now = time.time()
+
+    if not row:
+        return False, "Сначала нажмите /start"
+
+    trial_started, sub_expires = row[0], row[1]
+
+    # Платная подписка активна
+    if sub_expires and sub_expires > now:
+        return True, ""
+
+    # Trial: 10 минут с первого запуска
+    if trial_started:
+        trial_end = trial_started + TRIAL_MINUTES * 60
+        if now < trial_end:
+            left = int((trial_end - now) / 60)
+            return True, ""  # доступ есть
+        # Trial истёк
+        return False, (
+            f"⏳ Бесплатный период (10 мин) закончился.\n\n"
+            f"💳 Для продолжения оплатите подписку — {PAYMENT_AMOUNT:,} ₸ на 30 дней.\n".replace(",", " ")
+            f"Нажмите «💳 Оплатить» для получения реквизитов."
+        )
+
+    # Новый пользователь — даём trial
+    cursor.execute(
+        "UPDATE users SET trial_started_at=? WHERE user_id=?",
+        (now, user_id)
+    )
+    db.commit()
+    return True, ""
 
 # ================= КНОПКИ =================
 
 mode_kb = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="🏠 Аренда"),
-               KeyboardButton(text="🏡 Продажа")]],
+    keyboard=[
+        [KeyboardButton(text="🏠 Аренда"), KeyboardButton(text="🏡 Продажа")],
+        [KeyboardButton(text="💳 Оплатить")]
+    ],
     resize_keyboard=True
 )
 
@@ -119,7 +207,166 @@ async def parse(url):
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer("Выберите режим:", reply_markup=mode_kb)
+    user_id = message.from_user.id
+    cursor.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (user_id,))
+    db.commit()
+
+    access, msg = has_access(user_id)
+    if access:
+        await message.answer("Выберите режим:", reply_markup=mode_kb)
+    else:
+        await message.answer(msg, reply_markup=mode_kb)
+
+# ================= ОПЛАТА =================
+
+def pay_kb(request_id: int) -> InlineKeyboardMarkup:
+    """Кнопки для админа: подтвердить/отклонить платёж."""
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"pay:ok:{request_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"pay:no:{request_id}"),
+    )
+    return builder.as_markup()
+
+@dp.message(lambda m: m.text == "💳 Оплатить")
+async def pay_info(message: types.Message):
+    user_id = message.from_user.id
+    access, msg = has_access(user_id)
+
+    if access:
+        await message.answer(
+            f"✅ У вас есть активный доступ.\n\n"
+            f"Подписка: 30 дней — {PAYMENT_AMOUNT:,} ₸\n".replace(",", " ")
+            f"Реквизиты для перевода:\n"
+            f"💳 {PAYMENT_CARD}\n\n"
+            f"После перевода нажмите «Оплатил» — администратор подтвердит платёж.",
+            reply_markup=InlineKeyboardBuilder().row(
+                InlineKeyboardButton(text="✅ Оплатил", callback_data="pay:request")
+            ).as_markup()
+        )
+    else:
+        await message.answer(
+            f"💳 Подписка на 30 дней — {PAYMENT_AMOUNT:,} ₸\n\n".replace(",", " ")
+            f"Переведите на карту:\n"
+            f"💳 {PAYMENT_CARD}\n\n"
+            f"После перевода нажмите «Оплатил» — администратор подтвердит платёж вручную.",
+            reply_markup=InlineKeyboardBuilder().row(
+                InlineKeyboardButton(text="✅ Оплатил", callback_data="pay:request")
+            ).as_markup()
+        )
+
+@dp.callback_query(lambda c: c.data == "pay:request")
+async def pay_request(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    now = time.time()
+
+    cursor.execute(
+        "INSERT INTO payment_requests(user_id, amount, created_at) VALUES(?, ?, ?)",
+        (user_id, PAYMENT_AMOUNT, now)
+    )
+    db.commit()
+    request_id = cursor.lastrowid
+
+    user = callback.from_user
+    username = user.username or "—"
+    name = user.first_name or "—"
+
+    await callback.answer("Заявка отправлена. Ожидайте подтверждения.")
+
+    # Уведомление админу
+    if ADMIN_ID:
+        await bot.send_message(
+            ADMIN_ID,
+            f"💳 Новая заявка на оплату #{request_id}\n\n"
+            f"👤 User ID: {user_id}\n"
+            f"📛 Имя: {name}\n"
+            f"🔗 @{username}\n"
+            f"💰 Сумма: {PAYMENT_AMOUNT:,} ₸\n\n".replace(",", " ")
+            f"Подтвердите после получения перевода:",
+            reply_markup=pay_kb(request_id)
+        )
+
+    await callback.message.edit_text(
+        "⏳ Заявка отправлена администратору.\n"
+        "После подтверждения перевода вам придёт уведомление."
+    )
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("pay:ok:"))
+async def pay_confirm(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+
+    request_id = int(callback.data.split(":")[-1])
+    now = time.time()
+    expires = now + 30 * 24 * 3600  # 30 дней
+
+    cursor.execute(
+        "SELECT user_id FROM payment_requests WHERE id=? AND status='pending'",
+        (request_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        await callback.answer("Заявка уже обработана.", show_alert=True)
+        return
+
+    user_id = row[0]
+
+    cursor.execute(
+        "UPDATE payment_requests SET status='confirmed', confirmed_at=?, confirmed_by=? WHERE id=?",
+        (now, ADMIN_ID, request_id)
+    )
+    cursor.execute(
+        "UPDATE users SET trial_started_at=NULL, subscription_expires_at=? WHERE user_id=?",
+        (expires, user_id)
+    )
+    db.commit()
+
+    await callback.answer("Платёж подтверждён.")
+    await callback.message.edit_text(
+        f"✅ Платёж #{request_id} подтверждён.\n"
+        f"Пользователь {user_id} получил подписку на 30 дней."
+    )
+
+    # Уведомление пользователю
+    try:
+        await bot.send_message(
+            user_id,
+            f"✅ Платёж подтверждён!\n\n"
+            f"Подписка активна до {datetime.fromtimestamp(expires).strftime('%d.%m.%Y')}.\n"
+            f"Можете пользоваться поиском."
+        )
+    except Exception:
+        pass
+
+@dp.callback_query(lambda c: c.data and c.data.startswith("pay:no:"))
+async def pay_reject(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Нет доступа.", show_alert=True)
+        return
+
+    request_id = int(callback.data.split(":")[-1])
+
+    cursor.execute(
+        "SELECT user_id FROM payment_requests WHERE id=? AND status='pending'",
+        (request_id,)
+    )
+    row = cursor.fetchone()
+    if not row:
+        await callback.answer("Заявка уже обработана.", show_alert=True)
+        return
+
+    user_id = row[0]
+    cursor.execute("UPDATE payment_requests SET status='rejected' WHERE id=?", (request_id,))
+    db.commit()
+
+    await callback.answer("Заявка отклонена.")
+    await callback.message.edit_text(f"❌ Заявка #{request_id} отклонена.")
+
+    try:
+        await bot.send_message(user_id, "❌ Платёж не подтверждён. Проверьте реквизиты и попробуйте снова.")
+    except Exception:
+        pass
 
 # ================= ОБРАБОТКА =================
 
@@ -127,6 +374,13 @@ async def start(message: types.Message):
 async def handler(message: types.Message):
     user_id = message.from_user.id
     text = message.text
+
+    # Проверка доступа для всех действий кроме оплаты
+    if text != "💳 Оплатить":
+        access, msg = has_access(user_id)
+        if not access:
+            await message.answer(msg, reply_markup=mode_kb)
+            return
 
     # ===== СТОП =====
     if text == "⛔ Стоп":
@@ -223,6 +477,10 @@ async def handler(message: types.Message):
 # ================= ОТПРАВКА =================
 
 async def send_results(user_id, url):
+    access, _ = has_access(user_id)
+    if not access:
+        return
+
     results = await parse(url)
 
     for title, price, link in results:
@@ -255,6 +513,10 @@ async def monitor():
 
         for user_id, mode, rooms, district in users:
             if not district:
+                continue
+
+            access, _ = has_access(user_id)
+            if not access:
                 continue
 
             url = build_url(mode, rooms, district)
