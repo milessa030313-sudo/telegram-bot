@@ -505,7 +505,7 @@ async def handler(message: types.Message):
         mode, rooms = cursor.fetchone()
 
         url = build_url(mode, rooms, district)
-        await message.answer("🔎 Отправляю первую страницу...\n", reply_markup=search_kb)
+        await message.answer("🔎 Отправляю первую страницу.⚡ Далее вы будете получать только новые варианты сразу после публикации..\n", reply_markup=search_kb)
         await send_results(user_id, url)
         return
 
