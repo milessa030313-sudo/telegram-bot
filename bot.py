@@ -301,7 +301,7 @@ async def pay_info(message: types.Message):
         await message.answer(
             f"✅ У вас есть активный доступ.\n\n"
             f"Подписка: 30 дней — {amount_str} ₸\n"
-            f"Реквизиты для перевода:\n"
+            f"Реквизиты для перевода Kaspi:\n"
             f"💳 {PAYMENT_CARD}\n\n"
             f"После перевода нажмите «Оплатил» — администратор подтвердит платёж.",
             reply_markup=kb
