@@ -309,7 +309,7 @@ async def pay_info(message: types.Message):
     else:
         await message.answer(
             f"💳 Подписка на 30 дней — {amount_str} ₸\n\n"
-            f"Переведите на карту:\n"
+            f"Переведите на карту Kaspi:\n"
             f"💳 {PAYMENT_CARD}\n\n"
             f"После перевода нажмите «Оплатил» — администратор подтвердит платёж вручную.",
             reply_markup=kb
