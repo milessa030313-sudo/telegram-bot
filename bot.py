@@ -221,7 +221,7 @@ async def start(message: types.Message):
 
     access, msg = has_access(user_id)
     if access:
-    await message.answer(
+        await message.answer(
         "🏠 Добро пожаловать в сервис поиска квартир в Алматы — только от хозяев.\n"
         "Этот бот автоматически отслеживает новые объявления по выбранному району и количеству комнат.\n\n"
         "📌 Сначала вы получите актуальные объявления (первая страница).\n"
