@@ -8,9 +8,11 @@ import aiohttp
 from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -38,7 +40,8 @@ CREATE TABLE IF NOT EXISTS users(
     rooms TEXT,
     district TEXT,
     trial_started_at REAL,
-    subscription_expires_at REAL
+    subscription_expires_at REAL,
+    created_at REAL
 )
 """)
 
@@ -50,14 +53,21 @@ CREATE TABLE IF NOT EXISTS sent_links(
 )
 """)
 
-# Миграция: добавить колонки подписок в users (если их нет)
+# Миграции (если таблица была создана раньше без колонок)
 try:
     cursor.execute("ALTER TABLE users ADD COLUMN trial_started_at REAL")
     db.commit()
 except sqlite3.OperationalError:
     pass
+
 try:
     cursor.execute("ALTER TABLE users ADD COLUMN subscription_expires_at REAL")
+    db.commit()
+except sqlite3.OperationalError:
+    pass
+
+try:
+    cursor.execute("ALTER TABLE users ADD COLUMN created_at REAL")
     db.commit()
 except sqlite3.OperationalError:
     pass
@@ -74,11 +84,9 @@ CREATE TABLE IF NOT EXISTS payment_requests(
     FOREIGN KEY(user_id) REFERENCES users(user_id)
 )
 """)
-
 db.commit()
 
 # ================= ПРОВЕРКА ДОСТУПА =================
-
 def has_access(user_id: int) -> tuple[bool, str]:
     """
     Проверяет доступ пользователя.
@@ -90,7 +98,6 @@ def has_access(user_id: int) -> tuple[bool, str]:
     )
     row = cursor.fetchone()
     now = time.time()
-
     if not row:
         return False, "Сначала нажмите /start"
 
@@ -104,9 +111,7 @@ def has_access(user_id: int) -> tuple[bool, str]:
     if trial_started:
         trial_end = trial_started + TRIAL_MINUTES * 60
         if now < trial_end:
-            left = int((trial_end - now) / 60)
-            return True, ""  # доступ есть
-        # Trial истёк
+            return True, ""
         amount_str = f"{PAYMENT_AMOUNT:,}".replace(",", " ")
         return False, (
             f"⏳ Бесплатный период (10 мин) закончился.\n\n"
@@ -123,7 +128,6 @@ def has_access(user_id: int) -> tuple[bool, str]:
     return True, ""
 
 # ================= КНОПКИ =================
-
 mode_kb = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="🏠 Аренда"), KeyboardButton(text="🏡 Продажа")],
@@ -172,7 +176,6 @@ district_map = {
 }
 
 # ================= URL =================
-
 def build_url(mode, rooms, district):
     if mode == "rent":
         base = f"https://krisha.kz/arenda/kvartiry/almaty-{district}/"
@@ -181,7 +184,6 @@ def build_url(mode, rooms, district):
     return f"{base}?das[who]=1&das[live.rooms]={rooms}"
 
 # ================= ПАРСЕР =================
-
 async def parse(url):
     headers = {"User-Agent": "Mozilla/5.0"}
     async with aiohttp.ClientSession(headers=headers) as session:
@@ -195,21 +197,26 @@ async def parse(url):
     for card in cards:
         title = card.select_one("a.a-card__title")
         price = card.select_one("div.a-card__price")
-
         if not title or not price:
             continue
-
         link = "https://krisha.kz" + title.get("href")
         results.append((title.text.strip(), price.text.strip(), link))
 
     return results
 
 # ================= СТАРТ =================
-
 @dp.message(Command("start"))
 async def start(message: types.Message):
     user_id = message.from_user.id
     cursor.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (user_id,))
+    db.commit()
+
+    # фиксируем дату первого запуска (для статистики)
+    now = time.time()
+    cursor.execute(
+        "UPDATE users SET created_at = COALESCE(created_at, ?) WHERE user_id=?",
+        (now, user_id)
+    )
     db.commit()
 
     access, msg = has_access(user_id)
@@ -218,10 +225,61 @@ async def start(message: types.Message):
     else:
         await message.answer(msg, reply_markup=mode_kb)
 
-# ================= ОПЛАТА =================
+# ================= СТАТИСТИКА (ТОЛЬКО АДМИН) =================
+@dp.message(Command("stats"))
+async def stats(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
 
+    now = time.time()
+    day_ago = now - 24 * 3600
+    week_ago = now - 7 * 24 * 3600
+
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total = cursor.fetchone()[0] or 0
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE created_at IS NOT NULL AND created_at >= ?", (day_ago,))
+    today = cursor.fetchone()[0] or 0
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE created_at IS NOT NULL AND created_at >= ?", (week_ago,))
+    week = cursor.fetchone()[0] or 0
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE subscription_expires_at IS NOT NULL AND subscription_expires_at > ?", (now,))
+    paid_active = cursor.fetchone()[0] or 0
+
+    free = max(total - paid_active, 0)
+    conversion = (paid_active / total * 100) if total else 0.0
+
+    cursor.execute("""
+        SELECT user_id, subscription_expires_at
+        FROM users
+        WHERE subscription_expires_at IS NOT NULL AND subscription_expires_at > ?
+        ORDER BY subscription_expires_at ASC
+    """, (now,))
+    rows = cursor.fetchall()
+
+    lines = []
+    for uid, exp in rows:
+        days_left = int((exp - now + 86399) // 86400)
+        lines.append(f"👤 {uid} — {days_left} дн.")
+
+    tail = "\n".join(lines) if lines else "—"
+
+    await message.answer(
+        "📊 Статистика бота\n\n"
+        f"👥 Всего: {total}\n"
+        f"📅 Сегодня: {today}\n"
+        f"📈 За 7 дней: {week}\n\n"
+        f"💎 Активные подписки: {paid_active}\n"
+        f"🆓 Free: {free}\n"
+        f"💰 Paid: {paid_active}\n"
+        f"🔥 Конверсия: {conversion:.2f}%\n\n"
+        "⏳ Осталось дней:\n"
+        f"{tail}"
+    )
+
+# ================= ОПЛАТА =================
 def pay_kb(request_id: int) -> InlineKeyboardMarkup:
-    """Кнопки для админа: подтвердить/отклонить платёж."""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="✅ Подтвердить", callback_data=f"pay:ok:{request_id}"),
@@ -235,6 +293,10 @@ async def pay_info(message: types.Message):
     access, msg = has_access(user_id)
     amount_str = f"{PAYMENT_AMOUNT:,}".replace(",", " ")
 
+    kb = InlineKeyboardBuilder().row(
+        InlineKeyboardButton(text="✅ Оплатил", callback_data="pay:request")
+    ).as_markup()
+
     if access:
         await message.answer(
             f"✅ У вас есть активный доступ.\n\n"
@@ -242,9 +304,7 @@ async def pay_info(message: types.Message):
             f"Реквизиты для перевода:\n"
             f"💳 {PAYMENT_CARD}\n\n"
             f"После перевода нажмите «Оплатил» — администратор подтвердит платёж.",
-            reply_markup=InlineKeyboardBuilder().row(
-                InlineKeyboardButton(text="✅ Оплатил", callback_data="pay:request")
-            ).as_markup()
+            reply_markup=kb
         )
     else:
         await message.answer(
@@ -252,9 +312,7 @@ async def pay_info(message: types.Message):
             f"Переведите на карту:\n"
             f"💳 {PAYMENT_CARD}\n\n"
             f"После перевода нажмите «Оплатил» — администратор подтвердит платёж вручную.",
-            reply_markup=InlineKeyboardBuilder().row(
-                InlineKeyboardButton(text="✅ Оплатил", callback_data="pay:request")
-            ).as_markup()
+            reply_markup=kb
         )
 
 @dp.callback_query(lambda c: c.data == "pay:request")
@@ -275,7 +333,6 @@ async def pay_request(callback: types.CallbackQuery):
 
     await callback.answer("Заявка отправлена. Ожидайте подтверждения.")
 
-    # Уведомление админу
     if ADMIN_ID:
         amount_str = f"{PAYMENT_AMOUNT:,}".replace(",", " ")
         await bot.send_message(
@@ -302,7 +359,7 @@ async def pay_confirm(callback: types.CallbackQuery):
 
     request_id = int(callback.data.split(":")[-1])
     now = time.time()
-    expires = now + 30 * 24 * 3600  # 30 дней
+    expires = now + 30 * 24 * 3600
 
     cursor.execute(
         "SELECT user_id FROM payment_requests WHERE id=? AND status='pending'",
@@ -331,7 +388,6 @@ async def pay_confirm(callback: types.CallbackQuery):
         f"Пользователь {user_id} получил подписку на 30 дней."
     )
 
-    # Уведомление пользователю
     try:
         await bot.send_message(
             user_id,
@@ -372,45 +428,37 @@ async def pay_reject(callback: types.CallbackQuery):
         pass
 
 # ================= ОБРАБОТКА =================
-
 @dp.message()
 async def handler(message: types.Message):
     user_id = message.from_user.id
     text = message.text
 
-    # Проверка доступа для всех действий кроме оплаты
     if text != "💳 Оплатить":
         access, msg = has_access(user_id)
         if not access:
             await message.answer(msg, reply_markup=mode_kb)
             return
 
-    # ===== СТОП =====
     if text == "⛔ Стоп":
         cursor.execute("UPDATE users SET active=0 WHERE user_id=?", (user_id,))
         db.commit()
         await message.answer("❌ Автопоиск остановлен.", reply_markup=mode_kb)
         return
 
-    # ===== ИЗМЕНИТЬ ПАРАМЕТРЫ (ПОЛНЫЙ СБРОС) =====
     if text == "⚙ Изменить параметры":
         cursor.execute("""
-            UPDATE users 
-            SET active=0, mode=NULL, rooms=NULL, district=NULL 
+            UPDATE users
+            SET active=0, mode=NULL, rooms=NULL, district=NULL
             WHERE user_id=?
         """, (user_id,))
         cursor.execute("DELETE FROM sent_links WHERE user_id=?", (user_id,))
         db.commit()
-
-        await message.answer("🔄 Настройки сброшены.\nВыберите режим:",
-                             reply_markup=mode_kb)
+        await message.answer("🔄 Настройки сброшены.\nВыберите режим:", reply_markup=mode_kb)
         return
 
-    # ===== НАЗАД =====
     if text == "⬅ Назад":
         cursor.execute("SELECT mode, rooms, district FROM users WHERE user_id=?", (user_id,))
         data = cursor.fetchone()
-
         if not data:
             await message.answer("Выберите режим:", reply_markup=mode_kb)
             return
@@ -432,7 +480,6 @@ async def handler(message: types.Message):
         await message.answer("Выберите режим:", reply_markup=mode_kb)
         return
 
-    # ===== РЕЖИМ =====
     if text in ["🏠 Аренда", "🏡 Продажа"]:
         mode = "rent" if text == "🏠 Аренда" else "sale"
         cursor.execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (user_id,))
@@ -441,28 +488,16 @@ async def handler(message: types.Message):
         await message.answer("Выберите количество комнат:", reply_markup=rooms_kb)
         return
 
-    # ===== КОМНАТЫ =====
-    room_map = {
-        "1️⃣": "1",
-        "2️⃣": "2",
-        "3️⃣": "3",
-        "4️⃣": "4",
-        "5️⃣+": "5"
-    }
-
+    room_map = {"1️⃣": "1", "2️⃣": "2", "3️⃣": "3", "4️⃣": "4", "5️⃣+": "5"}
     if text in room_map:
-        cursor.execute("UPDATE users SET rooms=? WHERE user_id=?",
-                       (room_map[text], user_id))
+        cursor.execute("UPDATE users SET rooms=? WHERE user_id=?", (room_map[text], user_id))
         db.commit()
         await message.answer("Выберите район:", reply_markup=district_kb)
         return
 
-    # ===== РАЙОН =====
     if text in district_map:
         district = district_map[text]
-
-        cursor.execute("UPDATE users SET district=?, active=1 WHERE user_id=?",
-                       (district, user_id))
+        cursor.execute("UPDATE users SET district=?, active=1 WHERE user_id=?", (district, user_id))
         cursor.execute("DELETE FROM sent_links WHERE user_id=?", (user_id,))
         db.commit()
 
@@ -470,46 +505,30 @@ async def handler(message: types.Message):
         mode, rooms = cursor.fetchone()
 
         url = build_url(mode, rooms, district)
-
-        await message.answer("🔎 Отправляю первую страницу...\n",
-                             reply_markup=search_kb)
-
+        await message.answer("🔎 Отправляю первую страницу...\n", reply_markup=search_kb)
         await send_results(user_id, url)
         return
 
 # ================= ОТПРАВКА =================
-
 async def send_results(user_id, url):
     access, _ = has_access(user_id)
     if not access:
         return
 
     results = await parse(url)
-
     for title, price, link in results:
-        cursor.execute(
-            "SELECT link FROM sent_links WHERE user_id=? AND link=?",
-            (user_id, link)
-        )
+        cursor.execute("SELECT link FROM sent_links WHERE user_id=? AND link=?", (user_id, link))
         if cursor.fetchone():
             continue
 
-        cursor.execute(
-            "INSERT INTO sent_links(user_id, link) VALUES(?, ?)",
-            (user_id, link)
-        )
+        cursor.execute("INSERT INTO sent_links(user_id, link) VALUES(?, ?)", (user_id, link))
         db.commit()
 
-        await bot.send_message(
-            user_id,
-            f"🏠 {title}\n💰 {price}\n🔗 {link}"
-        )
+        await bot.send_message(user_id, f"🏠 {title}\n💰 {price}\n🔗 {link}")
 
 # ================= МОНИТОР =================
-
 async def monitor():
     await asyncio.sleep(10)
-
     while True:
         cursor.execute("SELECT user_id, mode, rooms, district FROM users WHERE active=1")
         users = cursor.fetchall()
@@ -528,7 +547,6 @@ async def monitor():
         await asyncio.sleep(120)
 
 # ================= ЗАПУСК =================
-
 async def main():
     print("🚀 Бот запущен")
     await bot.delete_webhook(drop_pending_updates=True)
