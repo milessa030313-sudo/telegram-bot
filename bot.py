@@ -20,7 +20,7 @@ load_dotenv()
 TOKEN = os.getenv("TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # ID админа для подтверждения платежей
 PAYMENT_CARD = os.getenv("PAYMENT_CARD", "0000 0000 0000 0000")  # Карта для перевода
-PAYMENT_AMOUNT = int(os.getenv("PAYMENT_AMOUNT", "7990"))  # Сумма подписки (₸)
+PAYMENT_AMOUNT = int(os.getenv("PAYMENT_AMOUNT", "3900"))  # Сумма подписки (₸)
 TRIAL_MINUTES = 10
 
 bot = Bot(token=TOKEN)
