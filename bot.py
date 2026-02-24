@@ -107,7 +107,7 @@ def has_access(user_id: int) -> tuple[bool, str]:
     if sub_expires and sub_expires > now:
         return True, ""
 
-    # Trial: 10 минут с первого запуска
+    # Trial: 2 часа с первого запуска
     if trial_started:
         trial_end = trial_started + TRIAL_MINUTES * 60
         if now < trial_end:
