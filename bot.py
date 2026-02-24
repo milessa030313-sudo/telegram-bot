@@ -21,7 +21,7 @@ TOKEN = os.getenv("TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # ID админа для подтверждения платежей
 PAYMENT_CARD = os.getenv("PAYMENT_CARD", "0000 0000 0000 0000")  # Карта для перевода
 PAYMENT_AMOUNT = int(os.getenv("PAYMENT_AMOUNT", "3900"))  # Сумма подписки (₸)
-TRIAL_MINUTES = 10
+TRIAL_MINUTES = 120  # 2 часа
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -114,7 +114,7 @@ def has_access(user_id: int) -> tuple[bool, str]:
             return True, ""
         amount_str = f"{PAYMENT_AMOUNT:,}".replace(",", " ")
         return False, (
-            f"⏳ Бесплатный период (10 мин) закончился.\n\n"
+            f"⏳ Бесплатный период (2 часа) закончился.\n\n"
             f"💳 Для продолжения оплатите подписку — {amount_str} ₸ на 30 дней.\n"
             f"Нажмите «💳 Оплатить» для получения реквизитов."
         )
@@ -227,7 +227,7 @@ async def start(message: types.Message):
         "📌 Сначала вы получите актуальные объявления (первая страница).\n"
         "⚡ Далее бот будет присылать только новые варианты сразу после публикации.\n"
         "🚫 Без риелторов. Без повторов.\n\n"
-        "⏳ Вам доступно 10 минут бесплатного теста.\n"
+        "⏳ Вам доступно 2 часа бесплатного теста.\n"
         "💎 После — подписка и круглосуточный мониторинг.\n\n"
         "Выберите режим ниже 👇",
         reply_markup=mode_kb
